@@ -1,0 +1,35 @@
+graph TD
+    subgraph Internet
+        U[Usuario]
+        TAPI[API de Telegram]
+    end
+
+    subgraph "Tu Infraestructura Servidor/Cloud"
+        SB[Servidor del Bot\nPython]
+        SPDF[Servicio PDF MCP\nFastAPI]
+        DB[Redis\nBase de Datos de Estado]
+    end
+
+    U -- HTTPS --> TAPI
+    TAPI -- Webhook/Long Polling --> SB
+
+    subgraph "Lógica del Servidor del Bot"
+        direction LR
+        PTB[python-telegram-bot\nConversationHandler]
+        REQ[requests]
+    end
+
+    subgraph "Lógica del Servicio PDF"
+        direction LR
+        JIN[Jinja2\nPlantilla HTML]
+        WEASY[WeasyPrint\nConversor a PDF]
+    end
+
+    SB -- Contiene --> PTB
+    SB -- Contiene --> REQ
+    SPDF -- Contiene --> JIN
+    SPDF -- Contiene --> WEASY
+    SB -- "Guarda/Lee estado de conversación" --> DB
+    SB -- "1. POST /generate-pdf JSON con datos" --> SPDF
+    SPDF -- "2. Devuelve archivo PDF" --> SB
+    SB -- "3. Envía documento" --> TAPI
