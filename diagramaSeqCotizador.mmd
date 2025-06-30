@@ -1,0 +1,31 @@
+    sequenceDiagram
+         participant Usuario
+         participant API de Telegram
+         participant Servidor del Bot (Python)
+         participant Servicio PDF (MCP Server)
+     
+         Usuario->>API de Telegram: Envía comando /crearCotizacion
+         API de Telegram->>Servidor del Bot (Python): Notifica nuevo mensaje
+         Servidor del Bot (Python)->>API de Telegram: Envía 1ª pregunta (Ej: "¿Nombre del cliente?)
+        API de Telegram->>Usuario: Muestra 1ª pregunta
+    
+        Usuario->>API de Telegram: Responde a la 1ª pregunta
+        API de Telegram->>Servidor del Bot (Python): Notifica nueva respuesta
+        Servidor del Bot (Python)-->>Servidor del Bot (Python): Almacena la respuesta en memoria/BD
+        Servidor del Bot (Python)->>API de Telegram: Envía 2ª pregunta (Ej: "¿Producto?")
+        API de Telegram->>Usuario: Muestra 2ª pregunta
+    
+        Note right of Usuario: ...el proceso de P&R continúa...
+    
+        Usuario->>API de Telegram: Responde a la última pregunta
+        API de Telegram->>Servidor del Bot (Python): Notifica última respuesta
+        Servidor del Bot (Python)-->>Servidor del Bot (Python): Reúne todos los datos de la cotización
+        Servidor del Bot (Python)->>Servicio PDF (MCP Server): POST /generate-pdf con datos (JSON)
+        
+        Servicio PDF (MCP Server)-->>Servicio PDF (MCP Server): Rellena plantilla HTML con los datos
+        Servicio PDF (MCP Server)-->>Servicio PDF (MCP Server): Convierte HTML a PDF
+        Servicio PDF (MCP Server)->>Servidor del Bot (Python): Devuelve el archivo PDF generado
+    
+        Servidor del Bot (Python)->>API de Telegram: Envía el documento PDF al usuario
+        API de Telegram->>Usuario: Entrega el PDF de la cotización
+
