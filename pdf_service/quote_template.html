@@ -191,7 +191,7 @@
         }
 
         .content-table td:last-child {
-            text-align: right;
+            text-align: left;
             font-weight: 600;
             color: #495057;
         }
@@ -425,28 +425,34 @@
             <table class="content-table">
                 <tr>
                     <th><i class="fas fa-clipboard-list"></i> Descripción del Trabajo</th>
-                    <th><i class="fas fa-dollar-sign"></i> Precio</th>
+                    <th><i class="fas fa-clipboard-list"></i> Precio</th>
                 </tr>
                 {% for job in jobs %}
                 <tr>
                     <td>{{ job.description }}</td>
-                    <td><span class="price-highlight">${{ "%.2f"|format(job.price) }}</span></td>
                 </tr>
                 {% endfor %}
+                <tr>
+                    <td><strong>Total Mano de Obra:</strong></td>
+                    <td><span class="grand-total">${{ "%.2f"|format(total_jobs) }}</span></td>
+                </tr>
             </table>
 
             <h3><i class="fas fa-boxes"></i> Materiales</h3>
             <table class="content-table">
                 <tr>
                     <th><i class="fas fa-clipboard-list"></i> Descripción del Material</th>
-                    <th><i class="fas fa-dollar-sign"></i> Precio</th>
+                    <th><i class="fas fa-clipboard-list"></i> Precio</th>
                 </tr>
                 {% for material in materials %}
                 <tr>
                     <td>{{ material.description }}</td>
-                    <td><span class="price-highlight">${{ "%.2f"|format(material.price) }}</span></td>
                 </tr>
                 {% endfor %}
+                <tr>
+                    <td><strong>Total Materiales:</strong></td>
+                    <td><span class="grand-total">${{ "%.2f"|format(total_materials) }}</span></td>
+                </tr>
             </table>
 
             

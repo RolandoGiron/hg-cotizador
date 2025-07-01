@@ -16,10 +16,13 @@ from telegram.ext import (
 # Estados de la conversación
 (
     CLIENT_NAME,
-    NUM_JOBS,
-    JOB_DETAILS,
-    MATERIALS_DETAILS,
-) = range(4)
+    ASK_NUM_JOBS,
+    COLLECT_JOB_DESCRIPTIONS,
+    ASK_TOTAL_JOB_PRICE,
+    ASK_NUM_MATERIALS,
+    COLLECT_MATERIAL_DESCRIPTIONS,
+    ASK_TOTAL_MATERIAL_PRICE,
+) = range(7)
 
 # Configuración
 config = configparser.ConfigParser()
@@ -38,6 +41,14 @@ def get_user_data(user_id):
         data["jobs"] = json.loads(data["jobs"])
     else:
         data["jobs"] = []
+    if "materials" in data:
+        data["materials"] = json.loads(data["materials"])
+    else:
+        data["materials"] = []
+    if "total_jobs_price" in data:
+        data["total_jobs_price"] = float(data["total_jobs_price"])
+    if "total_materials_price" in data:
+        data["total_materials_price"] = float(data["total_materials_price"])
     return data
 
 
@@ -63,46 +74,37 @@ async def client_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     user_id = update.message.from_user.id
     set_user_data(user_id, "client_name", update.message.text)
     await update.message.reply_text("Perfecto. ¿Cuántos trabajos se van a realizar?")
-    return NUM_JOBS
+    return ASK_NUM_JOBS
 
 
-async def num_jobs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Guarda el número de trabajos y pide los detalles del primer trabajo."""
+async def ask_num_jobs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Guarda el número de trabajos y pide la descripción del primer trabajo."""
     user_id = update.message.from_user.id
     try:
         num = int(update.message.text)
         if num <= 0:
             await update.message.reply_text("Por favor, introduce un número válido y positivo.")
-            return NUM_JOBS
+            return ASK_NUM_JOBS
         set_user_data(user_id, "num_jobs", num)
+        set_user_data(user_id, "jobs", [])  # Initialize jobs list
         set_user_data(user_id, "jobs_done", 0)
         await update.message.reply_text(
-            f"Entendido, {num} trabajos. Ahora, por favor, introduce la descripción y el precio del trabajo 1.\n"
-            "Formato: Descripción del trabajo, $Precio"
+            f"Entendido, {num} trabajos. Ahora, por favor, introduce la descripción del trabajo 1."
         )
-        return JOB_DETAILS
+        return COLLECT_JOB_DESCRIPTIONS
     except ValueError:
         await update.message.reply_text("Eso no parece un número. Por favor, introduce un número válido.")
-        return NUM_JOBS
+        return ASK_NUM_JOBS
 
 
-async def job_details(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Guarda los detalles de un trabajo y pide el siguiente, o pasa a los materiales."""
+async def collect_job_descriptions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Guarda la descripción de un trabajo y pide el siguiente, o el precio total de los trabajos."""
     user_id = update.message.from_user.id
     user_data = get_user_data(user_id)
 
-    try:
-        description, price_str = update.message.text.split(",")
-        price = float(price_str.replace("$", "").strip())
-    except ValueError:
-        await update.message.reply_text(
-            "Formato incorrecto. Por favor, usa: Descripción, $Precio\n"
-            "Ejemplo: Cambio de techo, $200"
-        )
-        return JOB_DETAILS
-
+    description = update.message.text.strip()
     jobs = user_data.get("jobs", [])
-    jobs.append({"description": description.strip(), "price": price})
+    jobs.append({"description": description, "price": 0})  # Price will be added later
     set_user_data(user_id, "jobs", jobs)
 
     jobs_done = int(user_data.get("jobs_done", 0)) + 1
@@ -111,55 +113,115 @@ async def job_details(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     num_jobs_total = int(user_data["num_jobs"])
     if jobs_done < num_jobs_total:
         await update.message.reply_text(
-            f"Trabajo {jobs_done} guardado. Ahora introduce los detalles del trabajo {jobs_done + 1}.\n"
-            "Formato: Descripción del trabajo, $Precio"
+            f"Trabajo {jobs_done} guardado. Ahora introduce la descripción del trabajo {jobs_done + 1}."
         )
-        return JOB_DETAILS
+        return COLLECT_JOB_DESCRIPTIONS
     else:
         await update.message.reply_text(
-            "Todos los trabajos han sido guardados. Ahora, por favor, introduce la lista de materiales.\n"
-            "Un material por línea, con formato: Material, $Precio\n"
-            "Ejemplo:\n100 tejas, $150\nLámina duralita, $200"
+            "Todas las descripciones de los trabajos han sido guardadas. Ahora, por favor, introduce el precio TOTAL de todos los trabajos."
         )
-        return MATERIALS_DETAILS
+        return ASK_TOTAL_JOB_PRICE
 
 
-async def materials_details(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Guarda los materiales, calcula totales y genera el PDF."""
+async def ask_total_job_price(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Guarda el precio total de los trabajos y pide el número de materiales."""
     user_id = update.message.from_user.id
     user_data = get_user_data(user_id)
-    
-    materials = []
-    total_materials = 0
-    lines = update.message.text.strip().split('\n')
-    for line in lines:
-        try:
-            description, price_str = line.split(",")
-            price = float(price_str.replace("$", "").strip())
-            materials.append({"description": description.strip(), "price": price})
-            total_materials += price
-        except ValueError:
-            await update.message.reply_text(
-                f"La línea '{line}' tiene un formato incorrecto. Por favor, usa: Material, $Precio\n"
-                "Inténtalo de nuevo con la lista de materiales completa."
-            )
-            return MATERIALS_DETAILS
 
-    total_jobs = sum(job["price"] for job in user_data["jobs"])
+    try:
+        total_jobs_price = float(update.message.text.replace("$", "").strip())
+        set_user_data(user_id, "total_jobs_price", total_jobs_price)
+    except ValueError:
+        await update.message.reply_text("Eso no parece un precio válido. Por favor, introduce un número.")
+        return ASK_TOTAL_JOB_PRICE
+
+    await update.message.reply_text("Perfecto. ¿Cuántos materiales se van a utilizar?")
+    return ASK_NUM_MATERIALS
+
+
+async def ask_num_materials(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Guarda el número de materiales y pide la descripción del primer material."""
+    user_id = update.message.from_user.id
+    try:
+        num = int(update.message.text)
+        if num <= 0:
+            await update.message.reply_text("Por favor, introduce un número válido y positivo.")
+            return ASK_NUM_MATERIALS
+        set_user_data(user_id, "num_materials", num)
+        set_user_data(user_id, "materials", [])  # Initialize materials list
+        set_user_data(user_id, "materials_done", 0)
+        await update.message.reply_text(
+            f"Entendido, {num} materiales. Ahora, por favor, introduce la descripción del material 1."
+        )
+        return COLLECT_MATERIAL_DESCRIPTIONS
+    except ValueError:
+        await update.message.reply_text("Eso no parece un número. Por favor, introduce un número válido.")
+        return ASK_NUM_MATERIALS
+
+
+async def collect_material_descriptions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Guarda la descripción de un material y pide el siguiente, o el precio total de los materiales."""
+    user_id = update.message.from_user.id
+    user_data = get_user_data(user_id)
+
+    description = update.message.text.strip()
+    materials = user_data.get("materials", [])
+    materials.append({"description": description, "price": 0})  # Price will be added later
+    set_user_data(user_id, "materials", materials)
+
+    materials_done = int(user_data.get("materials_done", 0)) + 1
+    set_user_data(user_id, "materials_done", materials_done)
+
+    num_materials_total = int(user_data["num_materials"])
+    if materials_done < num_materials_total:
+        await update.message.reply_text(
+            f"Material {materials_done} guardado. Ahora introduce la descripción del material {materials_done + 1}."
+        )
+        return COLLECT_MATERIAL_DESCRIPTIONS
+    else:
+        await update.message.reply_text(
+            "Todas las descripciones de los materiales han sido guardadas. Ahora, por favor, introduce el precio TOTAL de todos los materiales."
+        )
+        return ASK_TOTAL_MATERIAL_PRICE
+
+
+async def ask_total_material_price(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Guarda el precio total de los materiales, calcula totales y genera el PDF."""
+    user_id = update.message.from_user.id
+    user_data = get_user_data(user_id)
+
+    try:
+        total_materials_price = float(update.message.text.replace("$", "").strip())
+        set_user_data(user_id, "total_materials_price", total_materials_price)
+        user_data = get_user_data(user_id) # Re-fetch user_data to get the updated value
+    except ValueError:
+        await update.message.reply_text("Eso no parece un precio válido. Por favor, introduce un número.")
+        return ASK_TOTAL_MATERIAL_PRICE
+
+    # Calculate grand total
+    total_jobs = user_data["total_jobs_price"]
+    total_materials = user_data["total_materials_price"]
     grand_total = total_jobs + total_materials
 
-    # Preparar datos para el PDF
+    # Update job and material prices in the lists (they were initialized with 0)
+    jobs_list = user_data["jobs"]
+    # Distribute total job price evenly among jobs for display purposes, or keep 0 if not needed
+    # For now, we'll just pass the total job price to the PDF, and individual job prices will remain 0
+    # if the template expects individual prices, we'll need to adjust the template or this logic.
+    # For now, let's assume the template will use total_jobs and total_materials directly.
+
+    # Prepare data for PDF
     pdf_data = {
         "client_name": user_data["client_name"],
-        "date": "30/06/2025",
-        "jobs": user_data["jobs"],
-        "materials": materials,
+        "date": "30/06/2025",  # Consider dynamic date
+        "jobs": jobs_list,
+        "materials": user_data["materials"],
         "total_jobs": total_jobs,
         "total_materials": total_materials,
         "grand_total": grand_total,
     }
 
-    # Llamar al servicio de PDF
+    # Call PDF service
     try:
         response = requests.post(PDF_SERVICE_URL, json=pdf_data)
         if response.status_code == 200:
@@ -175,7 +237,7 @@ async def materials_details(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     except requests.exceptions.RequestException as e:
         await update.message.reply_text(f"No se pudo conectar al servicio de PDF: {e}")
 
-    # Limpiar y finalizar
+    # Clean up and end
     r.delete(f"user:{user_id}")
     return ConversationHandler.END
 
@@ -196,10 +258,13 @@ def main() -> None:
         entry_points=[CommandHandler("start", start)],
         states={
             CLIENT_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, client_name)],
-            NUM_JOBS: [MessageHandler(filters.TEXT & ~filters.COMMAND, num_jobs)],
-            JOB_DETAILS: [MessageHandler(filters.TEXT & ~filters.COMMAND, job_details)],
-            MATERIALS_DETAILS: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, materials_details)
+            ASK_NUM_JOBS: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_num_jobs)],
+            COLLECT_JOB_DESCRIPTIONS: [MessageHandler(filters.TEXT & ~filters.COMMAND, collect_job_descriptions)],
+            ASK_TOTAL_JOB_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_total_job_price)],
+            ASK_NUM_MATERIALS: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_num_materials)],
+            COLLECT_MATERIAL_DESCRIPTIONS: [MessageHandler(filters.TEXT & ~filters.COMMAND, collect_material_descriptions)],
+            ASK_TOTAL_MATERIAL_PRICE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, ask_total_material_price)
             ],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
