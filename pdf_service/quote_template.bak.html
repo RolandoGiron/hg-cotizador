@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Cotización</title>
+    <style>
+        body { font-family: 'Helvetica Neue', 'Helvetica', Helvetica, Arial, sans-serif; margin: 40px; color: #555; }
+        .container { max-width: 800px; margin: auto; }
+        .header { text-align: center; margin-bottom: 3em; }
+        .company-title { font-size: 2em; font-weight: bold; color: #333; }
+        .company-details { font-size: 0.9em; color: #777; }
+        .content-table { width: 100%; border-collapse: collapse; margin-bottom: 2em; }
+        .content-table th, .content-table td { border: 1px solid #ddd; padding: 12px; text-align: left; }
+        .content-table th { background-color: #f8f8f8; font-weight: bold; }
+        .client-info { margin-bottom: 2em; padding: 1em; background-color: #f8f8f8; border-radius: 5px; }
+        h2 { color: #333; border-bottom: 2px solid #f2f2f2; padding-bottom: 0.5em; margin-top: 2em;}
+        .totals { float: right; width: 45%; margin-top: 2em; }
+        .footer-notes { float: left; width: 50%; margin-top: 2em; font-size: 0.9em; color: #777; }
+        .footer-notes ul { padding-left: 20px; }
+        .footer-notes li { margin-bottom: 5px; }
+        .totals table { width: 100%; }
+        .totals th, .totals td { border: none; padding: 8px 0; }
+        .totals th { text-align: right; }
+        .totals td { text-align: right; font-weight: bold; }
+        .grand-total th, .grand-total td { font-size: 1.2em; color: #4CAF50; border-top: 2px solid #ddd; padding-top: 10px;}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="company-title">SOS MANTENIMIENTO TOTAL</div>
+            <div class="company-details">
+                Mantenimientos correctivos y preventivos en todas las áreas.<br>
+                Electricidad, plomería, fontanería, albañilería, etc.<br>
+                <strong>Teléfonos:</strong> 7632-6374 / 2519-0997<br>
+                Colonia Escalón, Calle Ramón Belloso, San Salvador
+            </div>
+        </div>
+
+        <div class="client-info">
+            <strong>Cliente:</strong> {{ client_name }}<br>
+            <strong>Fecha:</strong> {{ date }}
+        </div>
+
+        <h2>Detalle de la Cotización</h2>
+
+        <h3>Mano de Obra</h3>
+        <table class="content-table">
+            <tr>
+                <th>Descripción del Trabajo</th>
+                <th style="text-align:right; width: 25%;">Precio</th>
+            </tr>
+            {% for job in jobs %}
+            <tr>
+                <td>{{ job.description }}</td>
+                <td style="text-align:right;">${{ "%.2f"|format(job.price) }}</td>
+            </tr>
+            {% endfor %}
+        </table>
+
+        <h3>Materiales</h3>
+        <table class="content-table">
+            <tr>
+                <th>Descripción del Material</th>
+                <th style="text-align:right; width: 25%;">Precio</th>
+            </tr>
+            {% for material in materials %}
+            <tr>
+                <td>{{ material.description }}</td>
+                <td style="text-align:right;">${{ "%.2f"|format(material.price) }}</td>
+            </tr>
+            {% endfor %}
+        </table>
+
+        <div class="footer-notes">
+            <h3>Notas:</h3>
+            <ul>
+                <li>La oferta incluye materiales y mano de obra.</li>
+                <li>Se solicita el 50% de anticipo.</li>
+                <li>Costo de mano de obra no incluye IVA en caso solicite documento fiscal.</li>
+                <li>La oferta incluye desalojo del ripio.</li>
+            </ul>
+        </div>
+
+        <div class="totals">
+            <table>
+                <tr>
+                    <th>Subtotal Mano de Obra:</th>
+                    <td>${{ "%.2f"|format(total_jobs) }}</td>
+                </tr>
+                <tr>
+                    <th>Subtotal Materiales:</th>
+                    <td>${{ "%.2f"|format(total_materials) }}</td>
+                </tr>
+                <tr class="grand-total">
+                    <th>Total General:</th>
+                    <td>${{ "%.2f"|format(grand_total) }}</td>
+                </tr>
+            </table>
+        </div>
+
+        <div style="clear: both;"></div>
+
+    </div>
+</body>
+</html>
