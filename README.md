@@ -127,3 +127,27 @@ hg-cotizador/
     └───static/
         └───logo.png
 ```
+
+## Diagrama de Estados del Bot
+
+```mermaid
+stateDiagram-v2
+    [*] --> CLIENT_NAME
+    CLIENT_NAME --> ASK_NUM_JOBS: Client name entered
+    ASK_NUM_JOBS --> COLLECT_JOB_DESCRIPTIONS: Number of jobs entered
+    COLLECT_JOB_DESCRIPTIONS --> COLLECT_JOB_DESCRIPTIONS: Job description entered (more jobs)
+    COLLECT_JOB_DESCRIPTIONS --> ASK_TOTAL_JOB_PRICE: Last job description entered
+    ASK_TOTAL_JOB_PRICE --> ASK_NUM_MATERIALS: Total job price entered
+    ASK_NUM_MATERIALS --> COLLECT_MATERIAL_DESCRIPTIONS: Number of materials entered
+    COLLECT_MATERIAL_DESCRIPTIONS --> COLLECT_MATERIAL_DESCRIPTIONS: Material description entered (more materials)
+    COLLECT_MATERIAL_DESCRIPTIONS --> ASK_TOTAL_MATERIAL_PRICE: Last material description entered
+    ASK_TOTAL_MATERIAL_PRICE --> [*]: Total material price entered (PDF generated)
+
+    CLIENT_NAME --> [*]: /cancel
+    ASK_NUM_JOBS --> [*]: /cancel
+    COLLECT_JOB_DESCRIPTIONS --> [*]: /cancel
+    ASK_TOTAL_JOB_PRICE --> [*]: /cancel
+    ASK_NUM_MATERIALS --> [*]: /cancel
+    COLLECT_MATERIAL_DESCRIPTIONS --> [*]: /cancel
+    ASK_TOTAL_MATERIAL_PRICE --> [*]: /cancel
+```
