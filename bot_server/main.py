@@ -1,4 +1,5 @@
 
+import os
 import configparser
 import redis
 import requests
@@ -27,7 +28,7 @@ from telegram.ext import (
 # Configuración
 config = configparser.ConfigParser()
 config.read("../config.ini")
-TOKEN = config["telegram"]["token"]
+TOKEN = os.getenv("TELEGRAM_TOKEN")
 PDF_SERVICE_URL = config["pdf_service"]["url"]
 
 # Redis
