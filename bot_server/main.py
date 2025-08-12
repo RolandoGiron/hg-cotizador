@@ -13,6 +13,17 @@ from telegram.ext import (
     filters,
 )
 
+# Nuevos términos por defecto (con placeholder para working_days)
+DEFAULT_TERMS = [
+    "La oferta incluye materiales y mano de obra",
+    "Se solicita el 50% de anticipo",
+    "El trabajo se realizará en {working_days} días hábiles",
+    "Costo de mano de obra no incluye IVA en caso solicite documento fiscal",
+    "La oferta incluye desalojo del ripio",
+    "Garantía de 6 meses en mano de obra",
+    "Vigencia de la cotización: 30 días",
+]
+
 # Estados de la conversación
 (
     CLIENT_NAME,
@@ -27,7 +38,13 @@ from telegram.ext import (
     COLLECT_MATERIAL_PRICE,
     ASK_TOTAL_MATERIAL_PRICE,
     ASK_FOR_VAT,
-) = range(12)
+    ASK_WORKING_DAYS,
+    ASK_USE_DEFAULT_TERMS,
+    REVIEW_TERM_ACTION,
+    MODIFY_TERM,
+    ASK_ADD_EXTRA_TERM,
+    ADD_EXTRA_TERM,
+) = range(18)
 
 # Configuración
 config = configparser.ConfigParser()
@@ -42,24 +59,30 @@ r = redis.Redis(decode_responses=True)
 def get_user_data(user_id):
     """Obtiene los datos del usuario de Redis."""
     data = r.hgetall(f"user:{user_id}")
-    if "jobs" in data:
-        data["jobs"] = json.loads(data["jobs"])
-    else:
-        data["jobs"] = []
-    if "materials" in data:
-        data["materials"] = json.loads(data["materials"])
-    else:
-        data["materials"] = []
-    if "total_jobs_price" in data:
+    # Deserializar listas almacenadas como JSON
+    for key in ("jobs", "materials", "terms"):
+        if key in data:
+            try:
+                data[key] = json.loads(data[key])
+            except Exception:
+                data[key] = [] if key != "terms" else []
+        else:
+            if key != "terms":
+                data[key] = []
+            else:
+                data[key] = []
+    # Números
+    for key in ("total_jobs_price", "total_materials_price"):
+        if key in data:
+            try:
+                data[key] = float(data[key])
+            except ValueError:
+                data[key] = 0.0
+    if "working_days" in data:
         try:
-            data["total_jobs_price"] = float(data["total_jobs_price"])
+            data["working_days"] = int(float(data["working_days"]))
         except ValueError:
-            data["total_jobs_price"] = 0.0
-    if "total_materials_price" in data:
-        try:
-            data["total_materials_price"] = float(data["total_materials_price"])
-        except ValueError:
-            data["total_materials_price"] = 0.0
+            data["working_days"] = 0
     return data
 
 
@@ -76,27 +99,20 @@ def _parse_yes_no(text: str) -> bool:
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Inicia la conversación y pide el nombre del cliente."""
     user_id = update.message.from_user.id
-    r.delete(f"user:{user_id}")  # Limpiar datos de conversaciones anteriores
-    await update.message.reply_text(
-        "¡Hola! Vamos a crear una cotización. Por favor, dime el nombre del cliente."
-    )
+    r.delete(f"user:{user_id}")
+    await update.message.reply_text("¡Hola! Vamos a crear una cotización. Por favor, dime el nombre del cliente.")
     return CLIENT_NAME
 
 
 async def client_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Guarda el nombre del cliente y pregunta si desea precio por cada trabajo."""
     user_id = update.message.from_user.id
     set_user_data(user_id, "client_name", update.message.text.strip())
-    await update.message.reply_text(
-        "¿Deseas ingresar precio por cada trabajo? (Si/No)"
-    )
+    await update.message.reply_text("¿Deseas ingresar precio por cada trabajo? (Si/No)")
     return ASK_ADD_JOB_PRICES
 
 
 async def ask_add_job_prices(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Guarda preferencia de precios por trabajo y pide número de trabajos."""
     user_id = update.message.from_user.id
     per_item = _parse_yes_no(update.message.text)
     set_user_data(user_id, "per_job_prices", "true" if per_item else "false")
@@ -105,7 +121,6 @@ async def ask_add_job_prices(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def ask_num_jobs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Guarda el número de trabajos y pide la descripción del primer trabajo."""
     user_id = update.message.from_user.id
     try:
         num = int(update.message.text)
@@ -113,11 +128,9 @@ async def ask_num_jobs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             await update.message.reply_text("Por favor, introduce un número válido y positivo.")
             return ASK_NUM_JOBS
         set_user_data(user_id, "num_jobs", num)
-        set_user_data(user_id, "jobs", [])  # Inicializa lista de trabajos
+        set_user_data(user_id, "jobs", [])
         set_user_data(user_id, "jobs_done", 0)
-        await update.message.reply_text(
-            f"Entendido, {num} trabajos. Ahora, por favor, introduce la descripción del trabajo 1."
-        )
+        await update.message.reply_text(f"Entendido, {num} trabajos. Ahora, por favor, introduce la descripción del trabajo 1.")
         return COLLECT_JOB_DESCRIPTIONS
     except ValueError:
         await update.message.reply_text("Eso no parece un número. Por favor, introduce un número válido.")
@@ -125,43 +138,31 @@ async def ask_num_jobs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
 
 async def collect_job_descriptions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Guarda la descripción de un trabajo y pide precio si aplica o el siguiente trabajo."""
     user_id = update.message.from_user.id
     user_data = get_user_data(user_id)
-
     description = update.message.text.strip()
     jobs = user_data.get("jobs", [])
     jobs.append({"description": description, "price": 0.0})
     set_user_data(user_id, "jobs", jobs)
 
     per_item = user_data.get("per_job_prices") == "true"
-    num_jobs_total = int(user_data["num_jobs"]) if "num_jobs" in user_data else len(jobs)
+    num_jobs_total = int(user_data.get("num_jobs", len(jobs)))
 
     if per_item:
-        # Pedir el precio para este trabajo
-        job_index = len(jobs)
-        await update.message.reply_text(
-            f"Introduce el precio del trabajo {job_index}:"
-        )
+        await update.message.reply_text(f"Introduce el precio del trabajo {len(jobs)}:")
         return COLLECT_JOB_PRICE
     else:
-        # Marcar trabajo como completado
         jobs_done = int(user_data.get("jobs_done", 0)) + 1
         set_user_data(user_id, "jobs_done", jobs_done)
         if jobs_done < num_jobs_total:
-            await update.message.reply_text(
-                f"Trabajo {jobs_done} guardado. Ahora introduce la descripción del trabajo {jobs_done + 1}."
-            )
+            await update.message.reply_text(f"Trabajo {jobs_done} guardado. Ahora introduce la descripción del trabajo {jobs_done + 1}.")
             return COLLECT_JOB_DESCRIPTIONS
         else:
-            await update.message.reply_text(
-                "Todas las descripciones de los trabajos han sido guardadas. Ahora, por favor, introduce el precio TOTAL de todos los trabajos."
-            )
+            await update.message.reply_text("Todas las descripciones de los trabajos han sido guardadas. Ahora, por favor, introduce el precio TOTAL de todos los trabajos.")
             return ASK_TOTAL_JOB_PRICE
 
 
 async def collect_job_price(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Guarda el precio del último trabajo ingresado y continúa el flujo."""
     user_id = update.message.from_user.id
     user_data = get_user_data(user_id)
     try:
@@ -174,23 +175,17 @@ async def collect_job_price(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     if not jobs:
         await update.message.reply_text("Primero introduce la descripción del trabajo.")
         return COLLECT_JOB_DESCRIPTIONS
-
-    # Actualiza el precio del último trabajo
     jobs[-1]["price"] = price
     set_user_data(user_id, "jobs", jobs)
 
-    # Incrementa trabajos completados
     jobs_done = int(user_data.get("jobs_done", 0)) + 1
     set_user_data(user_id, "jobs_done", jobs_done)
 
     num_jobs_total = int(user_data.get("num_jobs", len(jobs)))
     if jobs_done < num_jobs_total:
-        await update.message.reply_text(
-            f"Trabajo {jobs_done} guardado. Ahora introduce la descripción del trabajo {jobs_done + 1}."
-        )
+        await update.message.reply_text(f"Trabajo {jobs_done} guardado. Ahora introduce la descripción del trabajo {jobs_done + 1}.")
         return COLLECT_JOB_DESCRIPTIONS
     else:
-        # Todos los trabajos listos: calcula total y pasa a preferencia de materiales
         total_jobs_price = sum(j.get("price", 0) for j in jobs)
         set_user_data(user_id, "total_jobs_price", total_jobs_price)
         await update.message.reply_text("¿Deseas ingresar precio por cada material? (Si/No)")
@@ -198,7 +193,6 @@ async def collect_job_price(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 
 async def ask_total_job_price(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Guarda el precio total de los trabajos y pregunta preferencia para materiales."""
     user_id = update.message.from_user.id
     try:
         total_jobs_price = float(update.message.text.replace("$", "").strip())
@@ -206,13 +200,11 @@ async def ask_total_job_price(update: Update, context: ContextTypes.DEFAULT_TYPE
     except ValueError:
         await update.message.reply_text("Eso no parece un precio válido. Por favor, introduce un número.")
         return ASK_TOTAL_JOB_PRICE
-
     await update.message.reply_text("Perfecto. ¿Deseas ingresar precio por cada material? (Si/No)")
     return ASK_ADD_MATERIAL_PRICES
 
 
 async def ask_add_material_prices(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Guarda preferencia de precios por material y pide número de materiales."""
     user_id = update.message.from_user.id
     per_item = _parse_yes_no(update.message.text)
     set_user_data(user_id, "per_material_prices", "true" if per_item else "false")
@@ -221,7 +213,6 @@ async def ask_add_material_prices(update: Update, context: ContextTypes.DEFAULT_
 
 
 async def ask_num_materials(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Guarda el número de materiales y pide la descripción del primer material."""
     user_id = update.message.from_user.id
     try:
         num = int(update.message.text)
@@ -234,11 +225,9 @@ async def ask_num_materials(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             await update.message.reply_text("No se agregarán materiales. Necesitas agregar el impuesto del IVA (Si/No)?")
             return ASK_FOR_VAT
         set_user_data(user_id, "num_materials", num)
-        set_user_data(user_id, "materials", [])  # Inicializa lista de materiales
+        set_user_data(user_id, "materials", [])
         set_user_data(user_id, "materials_done", 0)
-        await update.message.reply_text(
-            f"Entendido, {num} materiales. Ahora, por favor, introduce la descripción del material 1."
-        )
+        await update.message.reply_text(f"Entendido, {num} materiales. Ahora, por favor, introduce la descripción del material 1.")
         return COLLECT_MATERIAL_DESCRIPTIONS
     except ValueError:
         await update.message.reply_text("Eso no parece un número. Por favor, introduce un número válido.")
@@ -246,41 +235,31 @@ async def ask_num_materials(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 
 async def collect_material_descriptions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Guarda la descripción de un material y pide precio si aplica o el siguiente material."""
     user_id = update.message.from_user.id
     user_data = get_user_data(user_id)
-
     description = update.message.text.strip()
     materials = user_data.get("materials", [])
     materials.append({"description": description, "price": 0.0})
     set_user_data(user_id, "materials", materials)
 
     per_item = user_data.get("per_material_prices") == "true"
-    num_materials_total = int(user_data["num_materials"]) if "num_materials" in user_data else len(materials)
+    num_materials_total = int(user_data.get("num_materials", len(materials)))
 
     if per_item:
-        material_index = len(materials)
-        await update.message.reply_text(
-            f"Introduce el precio del material {material_index}:"
-        )
+        await update.message.reply_text(f"Introduce el precio del material {len(materials)}:")
         return COLLECT_MATERIAL_PRICE
     else:
         materials_done = int(user_data.get("materials_done", 0)) + 1
         set_user_data(user_id, "materials_done", materials_done)
         if materials_done < num_materials_total:
-            await update.message.reply_text(
-                f"Material {materials_done} guardado. Ahora introduce la descripción del material {materials_done + 1}."
-            )
+            await update.message.reply_text(f"Material {materials_done} guardado. Ahora introduce la descripción del material {materials_done + 1}.")
             return COLLECT_MATERIAL_DESCRIPTIONS
         else:
-            await update.message.reply_text(
-                "Todas las descripciones de los materiales han sido guardadas. Ahora, por favor, introduce el precio TOTAL de todos los materiales."
-            )
+            await update.message.reply_text("Todas las descripciones de los materiales han sido guardadas. Ahora, por favor, introduce el precio TOTAL de todos los materiales.")
             return ASK_TOTAL_MATERIAL_PRICE
 
 
 async def collect_material_price(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Guarda el precio del último material ingresado y continúa el flujo."""
     user_id = update.message.from_user.id
     user_data = get_user_data(user_id)
     try:
@@ -302,9 +281,7 @@ async def collect_material_price(update: Update, context: ContextTypes.DEFAULT_T
 
     num_materials_total = int(user_data.get("num_materials", len(materials)))
     if materials_done < num_materials_total:
-        await update.message.reply_text(
-            f"Material {materials_done} guardado. Ahora introduce la descripción del material {materials_done + 1}."
-        )
+        await update.message.reply_text(f"Material {materials_done} guardado. Ahora introduce la descripción del material {materials_done + 1}.")
         return COLLECT_MATERIAL_DESCRIPTIONS
     else:
         total_materials_price = sum(m.get("price", 0) for m in materials)
@@ -314,7 +291,6 @@ async def collect_material_price(update: Update, context: ContextTypes.DEFAULT_T
 
 
 async def ask_total_material_price(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Guarda el precio total de los materiales y pide el IVA."""
     user_id = update.message.from_user.id
     try:
         total_materials_price = float(update.message.text.replace("$", "").strip())
@@ -322,37 +298,148 @@ async def ask_total_material_price(update: Update, context: ContextTypes.DEFAULT
     except ValueError:
         await update.message.reply_text("Eso no parece un precio válido. Por favor, introduce un número.")
         return ASK_TOTAL_MATERIAL_PRICE
-
     await update.message.reply_text("Necesitas agregar el impuesto del IVA (Si/No)?")
     return ASK_FOR_VAT
 
 
 async def ask_for_vat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Guarda la respuesta sobre el IVA y procesa el PDF."""
     user_id = update.message.from_user.id
-    user_data = get_user_data(user_id)
     response = update.message.text.strip().lower()
-
     if response in ["si", "sí"]:
         set_user_data(user_id, "vat", "true")
     else:
         set_user_data(user_id, "vat", "false")
+    await update.message.reply_text("¿Cuántos días hábiles tomará el trabajo?")
+    return ASK_WORKING_DAYS
 
+
+async def ask_working_days(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user_id = update.message.from_user.id
+    try:
+        days = int(float(update.message.text.replace(",", ".")))
+        if days <= 0:
+            await update.message.reply_text("Introduce un número positivo de días.")
+            return ASK_WORKING_DAYS
+        set_user_data(user_id, "working_days", days)
+    except ValueError:
+        await update.message.reply_text("Eso no parece un número válido. Por favor, introduce un número.")
+        return ASK_WORKING_DAYS
+    await update.message.reply_text("¿Deseas usar los términos y condiciones por defecto? (Si/No)")
+    return ASK_USE_DEFAULT_TERMS
+
+
+async def ask_use_default_terms(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user_id = update.message.from_user.id
+    user_data = get_user_data(user_id)
+    use_default = _parse_yes_no(update.message.text)
+    if use_default:
+        working_days = user_data.get("working_days", 0)
+        terms = [t.format(working_days=working_days) for t in DEFAULT_TERMS]
+        set_user_data(user_id, "terms", terms)
+        return await generate_pdf(update, context)
+    # Iniciar proceso de revisión
+    set_user_data(user_id, "terms", [])
+    set_user_data(user_id, "term_index", 0)
+    await update.message.reply_text(
+        "Revisaremos cada término. Responde 'dejar', 'modificar' o 'eliminar'.\n" +
+        f"Término 1: '{DEFAULT_TERMS[0]}'. ¿Qué deseas hacer?"
+    )
+    return REVIEW_TERM_ACTION
+
+
+async def review_term_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user_id = update.message.from_user.id
+    user_data = get_user_data(user_id)
+    term_index = int(user_data.get("term_index", 0))
+    action = update.message.text.strip().lower()
+
+    if term_index >= len(DEFAULT_TERMS):
+        # Ya no hay términos (debería ir a agregar extra)
+        await update.message.reply_text("¿Deseas agregar otro término adicional? (Si/No)")
+        return ASK_ADD_EXTRA_TERM
+
+    current_term = DEFAULT_TERMS[term_index]
+
+    if action in ("dejar", "d", "keep"):
+        # Mantener (con sustitución working_days si aplica)
+        working_days = user_data.get("working_days", 0)
+        term_text = current_term.format(working_days=working_days)
+        terms = user_data.get("terms", [])
+        terms.append(term_text)
+        set_user_data(user_id, "terms", terms)
+    elif action in ("eliminar", "e", "delete"):
+        # No agregar
+        pass
+    elif action in ("modificar", "m", "edit"):
+        set_user_data(user_id, "awaiting_modification", current_term)
+        await update.message.reply_text("Escribe la nueva versión del término:")
+        return MODIFY_TERM
+    else:
+        await update.message.reply_text("Respuesta no válida. Usa 'dejar', 'modificar' o 'eliminar'.")
+        return REVIEW_TERM_ACTION
+
+    # Pasar al siguiente término
+    term_index += 1
+    set_user_data(user_id, "term_index", term_index)
+    if term_index < len(DEFAULT_TERMS):
+        await update.message.reply_text(
+            f"Término {term_index + 1}: '{DEFAULT_TERMS[term_index]}'. ¿Qué deseas hacer? (dejar/modificar/eliminar)"
+        )
+        return REVIEW_TERM_ACTION
+    else:
+        await update.message.reply_text("¿Deseas agregar otro término adicional? (Si/No)")
+        return ASK_ADD_EXTRA_TERM
+
+
+async def modify_term(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user_id = update.message.from_user.id
+    user_data = get_user_data(user_id)
+    new_text = update.message.text.strip()
+    terms = user_data.get("terms", [])
+    terms.append(new_text)
+    set_user_data(user_id, "terms", terms)
+    # Continuar con siguiente término
+    term_index = int(user_data.get("term_index", 0)) + 1
+    set_user_data(user_id, "term_index", term_index)
+    if term_index < len(DEFAULT_TERMS):
+        await update.message.reply_text(
+            f"Término {term_index + 1}: '{DEFAULT_TERMS[term_index]}'. ¿Qué deseas hacer? (dejar/modificar/eliminar)"
+        )
+        return REVIEW_TERM_ACTION
+    else:
+        await update.message.reply_text("¿Deseas agregar otro término adicional? (Si/No)")
+        return ASK_ADD_EXTRA_TERM
+
+
+async def ask_add_extra_term(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user_id = update.message.from_user.id
+    add_more = _parse_yes_no(update.message.text)
+    if add_more:
+        await update.message.reply_text("Escribe el nuevo término adicional:")
+        return ADD_EXTRA_TERM
+    # No más términos -> generar PDF
     return await generate_pdf(update, context)
 
 
+async def add_extra_term(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user_id = update.message.from_user.id
+    user_data = get_user_data(user_id)
+    terms = user_data.get("terms", [])
+    terms.append(update.message.text.strip())
+    set_user_data(user_id, "terms", terms)
+    await update.message.reply_text("¿Deseas agregar otro término adicional? (Si/No)")
+    return ASK_ADD_EXTRA_TERM
+
+
 async def generate_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Calcula totales y genera el PDF."""
     user_id = update.message.from_user.id
     user_data = get_user_data(user_id)
 
     jobs_list = user_data.get("jobs", [])
     materials_list = user_data.get("materials", [])
-
     per_job_prices = user_data.get("per_job_prices") == "true"
     per_material_prices = user_data.get("per_material_prices") == "true"
 
-    # Calcular totales
     total_jobs = sum(j.get("price", 0) for j in jobs_list) if per_job_prices else float(user_data.get("total_jobs_price", 0))
     total_materials = sum(m.get("price", 0) for m in materials_list) if per_material_prices else float(user_data.get("total_materials_price", 0))
     subtotal = total_jobs + total_materials
@@ -365,7 +452,12 @@ async def generate_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         vat = 0
         grand_total = round(subtotal, 2)
 
-    # Preparar datos para PDF
+    working_days = user_data.get("working_days", 0)
+    terms = user_data.get("terms", [])
+    if not terms:
+        # fallback a default
+        terms = [t.format(working_days=working_days) for t in DEFAULT_TERMS]
+
     from datetime import datetime
     pdf_data = {
         "client_name": user_data.get("client_name", ""),
@@ -379,9 +471,10 @@ async def generate_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         "grand_total": grand_total,
         "show_job_prices": per_job_prices,
         "show_material_prices": per_material_prices,
+        "working_days": working_days,
+        "terms": terms,
     }
 
-    # Llamar servicio PDF
     try:
         response = requests.post(PDF_SERVICE_URL, json=pdf_data)
         if response.status_code == 200:
@@ -391,19 +484,15 @@ async def generate_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
                 caption="¡Aquí está tu cotización!",
             )
         else:
-            await update.message.reply_text(
-                f"Hubo un error al generar el PDF (código: {response.status_code}). Por favor, inténtalo de nuevo."
-            )
+            await update.message.reply_text(f"Hubo un error al generar el PDF (código: {response.status_code}). Por favor, inténtalo de nuevo.")
     except requests.exceptions.RequestException as e:
         await update.message.reply_text(f"No se pudo conectar al servicio de PDF: {e}")
 
-    # Limpiar y terminar
     r.delete(f"user:{user_id}")
     return ConversationHandler.END
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Cancela la conversación y limpia los datos."""
     user_id = update.message.from_user.id
     r.delete(f"user:{user_id}")
     await update.message.reply_text("Conversación cancelada.")
@@ -411,7 +500,6 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 
 def main() -> None:
-    """Inicia el bot."""
     application = Application.builder().token(TOKEN).build()
 
     conv_handler = ConversationHandler(
@@ -429,6 +517,12 @@ def main() -> None:
             COLLECT_MATERIAL_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, collect_material_price)],
             ASK_TOTAL_MATERIAL_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_total_material_price)],
             ASK_FOR_VAT: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_for_vat)],
+            ASK_WORKING_DAYS: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_working_days)],
+            ASK_USE_DEFAULT_TERMS: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_use_default_terms)],
+            REVIEW_TERM_ACTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, review_term_action)],
+            MODIFY_TERM: [MessageHandler(filters.TEXT & ~filters.COMMAND, modify_term)],
+            ASK_ADD_EXTRA_TERM: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_add_extra_term)],
+            ADD_EXTRA_TERM: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_extra_term)],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
     )

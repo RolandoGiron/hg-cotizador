@@ -496,13 +496,9 @@
                 <div class="footer-notes">
                     <h3><i class="fas fa-info-circle"></i> Términos y Condiciones</h3>
                     <ul>
-                        <li>La oferta incluye materiales y mano de obra</li>
-                        <li>Se solicita el 50% de anticipo</li>
-                        <li>El trabajo se realizará en 6 dias habiles</li>
-                        <!--<li>Costo de mano de obra no incluye IVA en caso solicite documento fiscal</li>-->
-                        <!--<li>La oferta incluye desalojo del ripio</li>-->
-                        <!--<li>Garantía de 6 meses en mano de obra</li>-->
-                        <li>Vigencia de la cotización: 30 días</li>
+                        {% for term in terms %}
+                        <li>{{ term }}</li>
+                        {% endfor %}
                     </ul>
                 </div>
             </div>
