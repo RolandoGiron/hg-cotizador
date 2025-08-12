@@ -44,7 +44,12 @@ DEFAULT_TERMS = [
     MODIFY_TERM,
     ASK_ADD_EXTRA_TERM,
     ADD_EXTRA_TERM,
-) = range(18)
+    REVIEW_SUMMARY,
+    SELECT_EDIT_ITEM,
+    CHOOSE_EDIT_FIELD,
+    EDIT_ITEM_DESCRIPTION,
+    EDIT_ITEM_PRICE,
+) = range(23)
 
 # Configuración
 config = configparser.ConfigParser()
@@ -96,6 +101,23 @@ def set_user_data(user_id, key, value):
 def _parse_yes_no(text: str) -> bool:
     t = text.strip().lower()
     return t in ("si", "sí", "s", "yes", "y")
+
+
+async def on_timeout(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Handler cuando expira la conversación por inactividad."""
+    try:
+        user_id = update.effective_user.id if update and update.effective_user else None
+        chat_id = update.effective_chat.id if update and update.effective_chat else None
+        if user_id:
+            r.delete(f"user:{user_id}")
+        if chat_id:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text="La conversación expiró por inactividad. Escribe /start para comenzar de nuevo."
+            )
+    except Exception:
+        pass
+    return ConversationHandler.END
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -336,7 +358,7 @@ async def ask_use_default_terms(update: Update, context: ContextTypes.DEFAULT_TY
         working_days = user_data.get("working_days", 0)
         terms = [t.format(working_days=working_days) for t in DEFAULT_TERMS]
         set_user_data(user_id, "terms", terms)
-        return await generate_pdf(update, context)
+        return await begin_review(update, context)
     # Iniciar proceso de revisión
     set_user_data(user_id, "terms", [])
     set_user_data(user_id, "term_index", 0)
@@ -354,21 +376,18 @@ async def review_term_action(update: Update, context: ContextTypes.DEFAULT_TYPE)
     action = update.message.text.strip().lower()
 
     if term_index >= len(DEFAULT_TERMS):
-        # Ya no hay términos (debería ir a agregar extra)
         await update.message.reply_text("¿Deseas agregar otro término adicional? (Si/No)")
         return ASK_ADD_EXTRA_TERM
 
     current_term = DEFAULT_TERMS[term_index]
 
     if action in ("dejar", "d", "keep"):
-        # Mantener (con sustitución working_days si aplica)
         working_days = user_data.get("working_days", 0)
         term_text = current_term.format(working_days=working_days)
         terms = user_data.get("terms", [])
         terms.append(term_text)
         set_user_data(user_id, "terms", terms)
     elif action in ("eliminar", "e", "delete"):
-        # No agregar
         pass
     elif action in ("modificar", "m", "edit"):
         set_user_data(user_id, "awaiting_modification", current_term)
@@ -378,7 +397,6 @@ async def review_term_action(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text("Respuesta no válida. Usa 'dejar', 'modificar' o 'eliminar'.")
         return REVIEW_TERM_ACTION
 
-    # Pasar al siguiente término
     term_index += 1
     set_user_data(user_id, "term_index", term_index)
     if term_index < len(DEFAULT_TERMS):
@@ -398,7 +416,6 @@ async def modify_term(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     terms = user_data.get("terms", [])
     terms.append(new_text)
     set_user_data(user_id, "terms", terms)
-    # Continuar con siguiente término
     term_index = int(user_data.get("term_index", 0)) + 1
     set_user_data(user_id, "term_index", term_index)
     if term_index < len(DEFAULT_TERMS):
@@ -417,8 +434,8 @@ async def ask_add_extra_term(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if add_more:
         await update.message.reply_text("Escribe el nuevo término adicional:")
         return ADD_EXTRA_TERM
-    # No más términos -> generar PDF
-    return await generate_pdf(update, context)
+    # Ir a revisión final
+    return await begin_review(update, context)
 
 
 async def add_extra_term(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -429,6 +446,204 @@ async def add_extra_term(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     set_user_data(user_id, "terms", terms)
     await update.message.reply_text("¿Deseas agregar otro término adicional? (Si/No)")
     return ASK_ADD_EXTRA_TERM
+
+
+# ---------- Revisión final (resumen, edición y confirmación) ----------
+
+def _format_money(value: float) -> str:
+    try:
+        return f"${value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    except Exception:
+        return f"${value}"
+
+
+async def begin_review(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Construye y envía el resumen y pregunta confirmación."""
+    user_id = update.message.from_user.id
+    user_data = get_user_data(user_id)
+
+    jobs_list = user_data.get("jobs", [])
+    materials_list = user_data.get("materials", [])
+    per_job_prices = user_data.get("per_job_prices") == "true"
+    per_material_prices = user_data.get("per_material_prices") == "true"
+
+    total_jobs = sum(j.get("price", 0) for j in jobs_list) if per_job_prices else float(user_data.get("total_jobs_price", 0))
+    total_materials = sum(m.get("price", 0) for m in materials_list) if per_material_prices else float(user_data.get("total_materials_price", 0))
+    subtotal = total_jobs + total_materials
+
+    vat_included = user_data.get("vat") == "true"
+    vat = round(subtotal * 0.13, 2) if vat_included else 0
+    grand_total = round(subtotal + vat, 2)
+
+    lines = [
+        "Resumen de la cotización:",
+        "",
+        "Trabajos:",
+    ]
+    if jobs_list:
+        for i, j in enumerate(jobs_list, start=1):
+            price_txt = _format_money(j.get("price", 0)) if per_job_prices else "-"
+            lines.append(f"  {i}. {j.get('description','')} | Precio: {price_txt}")
+        lines.append(f"  Total Mano de Obra: {_format_money(total_jobs)}")
+    else:
+        lines.append("  (sin trabajos)")
+
+    lines.append("")
+    lines.append("Materiales:")
+    if materials_list:
+        for i, m in enumerate(materials_list, start=1):
+            price_txt = _format_money(m.get("price", 0)) if per_material_prices else "-"
+            lines.append(f"  {i}. {m.get('description','')} | Precio: {price_txt}")
+        lines.append(f"  Total Materiales: {_format_money(total_materials)}")
+    else:
+        lines.append("  (sin materiales)")
+
+    lines.append("")
+    lines.append(f"Subtotal: {_format_money(subtotal)}")
+    if vat_included:
+        lines.append(f"IVA (13%): {_format_money(vat)}")
+    lines.append(f"Total General: {_format_money(grand_total)}")
+    lines.append("")
+    lines.append("¿Está bien así? (Si/No)")
+
+    await update.message.reply_text("\n".join(lines))
+    return REVIEW_SUMMARY
+
+
+async def review_summary(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Confirma el resumen o inicia edición de un ítem."""
+    user_id = update.message.from_user.id
+    answer = update.message.text.strip().lower()
+    if answer in ("si", "sí", "s", "yes", "y"):
+        return await generate_pdf(update, context)
+    await update.message.reply_text(
+        "Indica qué deseas modificar. Ejemplos: 'trabajo 2', 'material 1'."
+    )
+    return SELECT_EDIT_ITEM
+
+
+async def select_edit_item(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user_id = update.message.from_user.id
+    user_data = get_user_data(user_id)
+    text = update.message.text.strip().lower()
+
+    edit_type = None
+    index = None
+    if text.startswith("trabajo"):
+        edit_type = "job"
+        parts = text.split()
+        if len(parts) >= 2 and parts[1].isdigit():
+            index = int(parts[1]) - 1
+    elif text.startswith("material"):
+        edit_type = "material"
+        parts = text.split()
+        if len(parts) >= 2 and parts[1].isdigit():
+            index = int(parts[1]) - 1
+
+    if edit_type is None or index is None:
+        await update.message.reply_text("Entrada no válida. Usa 'trabajo N' o 'material M'.")
+        return SELECT_EDIT_ITEM
+
+    items = user_data.get("jobs", []) if edit_type == "job" else user_data.get("materials", [])
+    if index < 0 or index >= len(items):
+        await update.message.reply_text("Número fuera de rango. Intenta de nuevo.")
+        return SELECT_EDIT_ITEM
+
+    set_user_data(user_id, "edit_type", edit_type)
+    set_user_data(user_id, "edit_index", index)
+
+    per_item_prices = (user_data.get("per_job_prices") == "true") if edit_type == "job" else (user_data.get("per_material_prices") == "true")
+
+    if per_item_prices:
+        await update.message.reply_text("¿Qué deseas modificar? (descripcion/precio/ambos)")
+    else:
+        await update.message.reply_text("¿Qué deseas modificar? (descripcion) — los precios por ítem están desactivados")
+    return CHOOSE_EDIT_FIELD
+
+
+async def choose_edit_field(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user_id = update.message.from_user.id
+    user_data = get_user_data(user_id)
+    choice = update.message.text.strip().lower()
+
+    edit_type = user_data.get("edit_type")
+    edit_index = int(user_data.get("edit_index", 0))
+
+    per_item_prices = (user_data.get("per_job_prices") == "true") if edit_type == "job" else (user_data.get("per_material_prices") == "true")
+
+    if choice in ("descripcion", "descripción"):
+        set_user_data(user_id, "edit_next", "none")
+        await update.message.reply_text("Escribe la nueva descripción:")
+        return EDIT_ITEM_DESCRIPTION
+    elif choice == "precio" and per_item_prices:
+        set_user_data(user_id, "edit_next", "none")
+        await update.message.reply_text("Escribe el nuevo precio:")
+        return EDIT_ITEM_PRICE
+    elif choice == "ambos" and per_item_prices:
+        set_user_data(user_id, "edit_next", "price")
+        await update.message.reply_text("Escribe la nueva descripción:")
+        return EDIT_ITEM_DESCRIPTION
+    else:
+        await update.message.reply_text("Opción no válida. Responde con descripcion/precio/ambos.")
+        return CHOOSE_EDIT_FIELD
+
+
+async def edit_item_description(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user_id = update.message.from_user.id
+    user_data = get_user_data(user_id)
+    new_desc = update.message.text.strip()
+
+    edit_type = user_data.get("edit_type")
+    index = int(user_data.get("edit_index", 0))
+
+    if edit_type == "job":
+        items = user_data.get("jobs", [])
+        items[index]["description"] = new_desc
+        set_user_data(user_id, "jobs", items)
+    else:
+        items = user_data.get("materials", [])
+        items[index]["description"] = new_desc
+        set_user_data(user_id, "materials", items)
+
+    if user_data.get("edit_next") == "price":
+        await update.message.reply_text("Ahora escribe el nuevo precio:")
+        return EDIT_ITEM_PRICE
+
+    # Volver a resumen
+    return await begin_review(update, context)
+
+
+async def edit_item_price(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user_id = update.message.from_user.id
+    user_data = get_user_data(user_id)
+    try:
+        new_price = float(update.message.text.replace("$", "").strip())
+    except ValueError:
+        await update.message.reply_text("Eso no parece un precio válido. Por favor, introduce un número.")
+        return EDIT_ITEM_PRICE
+
+    edit_type = user_data.get("edit_type")
+    index = int(user_data.get("edit_index", 0))
+
+    if edit_type == "job":
+        items = user_data.get("jobs", [])
+        items[index]["price"] = new_price
+        set_user_data(user_id, "jobs", items)
+        # Recalcular total de trabajos si aplica
+        if user_data.get("per_job_prices") == "true":
+            set_user_data(user_id, "total_jobs_price", sum(j.get("price", 0) for j in items))
+    else:
+        items = user_data.get("materials", [])
+        items[index]["price"] = new_price
+        set_user_data(user_id, "materials", items)
+        if user_data.get("per_material_prices") == "true":
+            set_user_data(user_id, "total_materials_price", sum(m.get("price", 0) for m in items))
+
+    # Limpiar flags de edición opcional
+    set_user_data(user_id, "edit_next", "none")
+
+    # Volver a resumen
+    return await begin_review(update, context)
 
 
 async def generate_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -455,7 +670,6 @@ async def generate_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     working_days = user_data.get("working_days", 0)
     terms = user_data.get("terms", [])
     if not terms:
-        # fallback a default
         terms = [t.format(working_days=working_days) for t in DEFAULT_TERMS]
 
     from datetime import datetime
@@ -523,8 +737,15 @@ def main() -> None:
             MODIFY_TERM: [MessageHandler(filters.TEXT & ~filters.COMMAND, modify_term)],
             ASK_ADD_EXTRA_TERM: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_add_extra_term)],
             ADD_EXTRA_TERM: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_extra_term)],
+            REVIEW_SUMMARY: [MessageHandler(filters.TEXT & ~filters.COMMAND, review_summary)],
+            SELECT_EDIT_ITEM: [MessageHandler(filters.TEXT & ~filters.COMMAND, select_edit_item)],
+            CHOOSE_EDIT_FIELD: [MessageHandler(filters.TEXT & ~filters.COMMAND, choose_edit_field)],
+            EDIT_ITEM_DESCRIPTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_item_description)],
+            EDIT_ITEM_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_item_price)],
+            ConversationHandler.TIMEOUT: [MessageHandler(filters.ALL, on_timeout)],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
+        conversation_timeout=900,
     )
 
     application.add_handler(conv_handler)
