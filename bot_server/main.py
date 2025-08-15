@@ -713,6 +713,16 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return ConversationHandler.END
 
 
+async def restart(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Reinicia la conversación."""
+    user_id = update.message.from_user.id
+    r.delete(f"user:{user_id}")
+    await update.message.reply_text(
+        "Conversación reiniciada. ¡Vamos a crear una cotización! Por favor, dime el nombre del cliente."
+    )
+    return CLIENT_NAME
+
+
 def main() -> None:
     application = Application.builder().token(TOKEN).build()
 
@@ -744,7 +754,7 @@ def main() -> None:
             EDIT_ITEM_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_item_price)],
             ConversationHandler.TIMEOUT: [MessageHandler(filters.ALL, on_timeout)],
         },
-        fallbacks=[CommandHandler("cancel", cancel)],
+        fallbacks=[CommandHandler("cancel", cancel), CommandHandler("restart", restart)],
         conversation_timeout=900,
     )
 
