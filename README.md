@@ -4,150 +4,115 @@ El HG Cotizador Bot es una aplicación que permite a los usuarios generar cotiza
 
 ## Arquitectura
 
-La aplicación se compone de tres servicios principales que trabajan de forma coordinada:
+La aplicación se compone de cuatro componentes principales que trabajan de forma coordinada:
 
 1.  **Bot de Telegram (Interfaz):** La interfaz directa con el usuario. Se configura a través de BotFather y utiliza la API de Telegram para la comunicación.
 
-2.  **Servidor del Bot (Lógica de Negocio):** Un backend en Python que gestiona la conversación con el usuario, interpreta comandos, recopila datos y orquesta la generación del PDF.
+2.  **Servidor del Bot (Lógica de Negocio):** Un backend en Python que gestiona la conversación con el usuario, interpreta comandos, recopila datos, almacena el estado de la conversación en Redis y orquesta la generación del PDF.
 
 3.  **Servicio de Generación de PDF (Microservicio):** Un microservicio especializado en la creación de documentos PDF a partir de plantillas HTML y datos JSON.
 
-El flujo de trabajo general es el siguiente:
-
-*   El usuario interactúa con el Bot de Telegram.
-*   El Servidor del Bot gestiona la conversación, haciendo preguntas y recopilando la información necesaria para la cotización.
-*   Una vez que se tienen todos los datos, el Servidor del Bot envía una solicitud al Servicio de Generación de PDF con los datos de la cotización.
-*   El Servicio de Generación de PDF procesa los datos, rellena una plantilla HTML, la convierte a PDF y devuelve el archivo al Servidor del Bot.
-*   Finalmente, el Servidor del Bot envía el PDF generado al usuario a través de Telegram.
+4.  **Base de Datos (Persistencia):** Una base de datos NoSQL (Google Firestore) para almacenar, consultar y gestionar las cotizaciones generadas.
 
 ## Características
 
 *   Generación de cotizaciones en PDF mediante un bot de Telegram.
 *   Interacción conversacional para la recopilación de datos.
+*   Soporte para precios por ítem o totales.
+*   Cálculo de IVA opcional.
+*   Términos y condiciones personalizables.
+*   Resumen de la cotización para revisión antes de generar el PDF.
+*   Edición de ítems (trabajos y materiales) después del resumen.
+*   Persistencia de cotizaciones en Google Firestore.
+*   Comandos para listar, ver, actualizar y eliminar cotizaciones.
 *   Arquitectura modular y escalable.
-*   Uso de plantillas HTML para un diseño flexible de las cotizaciones.
 
 ## Tecnologías Utilizadas
 
 ### Servidor del Bot
-
 *   **Python**
 *   `python-telegram-bot`: Para la interacción con la API de Telegram.
 *   `requests`: Para realizar llamadas HTTP al servicio de PDF.
-*   `redis`: (Opcional, pero recomendado) Para almacenar el estado de la conversación.
+*   `redis`: Para almacenar el estado de la conversación.
+*   `google-cloud-firestore`: Para la comunicación con la base de datos.
 
 ### Servicio de Generación de PDF
-
 *   **Python**
 *   `FastAPI`: Framework web para construir la API REST.
 *   `uvicorn`: Servidor ASGI para ejecutar FastAPI.
 *   `Jinja2`: Motor de plantillas para renderizar HTML.
 *   `WeasyPrint`: Librería para convertir HTML y CSS a PDF.
 
-## Configuración e Instalación
+### Base de Datos
+*   **Google Firestore**: Base de datos NoSQL para persistencia de las cotizaciones.
 
-### Prerrequisitos
-
-*   Python 3.8+
-*   pip (gestor de paquetes de Python)
-*   Redis (opcional, si se desea persistencia del estado de la conversación)
-
-### Pasos de Instalación
-
-1.  **Clonar el repositorio:**
-    ```bash
-    git clone https://github.com/your-repo/hg-cotizador.git
-    cd hg-cotizador
-    ```
-
-2.  **Configurar `config.ini`:**
-    Crea un archivo `config.ini` en la raíz del proyecto con la siguiente estructura. Reemplaza `YOUR_TELEGRAM_BOT_TOKEN` con el token obtenido de BotFather en Telegram.
-
-    ```ini
-    [telegram]
-    token = YOUR_TELEGRAM_BOT_TOKEN
-
-    [pdf_service]
-    url = http://127.0.0.1:8000/api/v1/generate-pdf
-    ```
-
-3.  **Instalar dependencias del Servicio de PDF:**
-    ```bash
-    cd pdf_service
-    pip install -r requirements.txt
-    cd ..
-    ```
-
-4.  **Instalar dependencias del Servidor del Bot:**
-    ```bash
-    cd bot_server
-    pip install -r requirements.txt
-    cd ..
-    ```
-
-## Cómo Ejecutar
-
-Para que la aplicación funcione correctamente, debes iniciar ambos servicios:
-
-1.  **Iniciar el Servicio de Generación de PDF:**
-    Abre una terminal, navega a la carpeta `pdf_service` y ejecuta:
-    ```bash
-    uvicorn main:app --host 0.0.0.0 --port 8000
-    ```
-    Este servicio se ejecutará en `http://127.0.0.1:8000` por defecto.
-
-2.  **Iniciar el Servidor del Bot:**
-    Abre otra terminal, navega a la carpeta `bot_server` y ejecuta:
-    ```bash
-    python main.py
-    ```
-    Este servicio se conectará a la API de Telegram y comenzará a escuchar mensajes.
-
-Una vez que ambos servicios estén corriendo, puedes interactuar con tu bot de Telegram. Envía el comando `/crearCotizacion` para iniciar el proceso de generación de una cotización.
-
-## Estructura del Proyecto
-
-```
-hg-cotizador/
-├───Conceptualizacion.md
-├───config.ini
-├───diagCompoCotizador.mmd
-├───diagramaSeqCotizador.mmd
-├───.git/...
-├───bot_server/
-│   ├───main.py
-│   └───requirements.txt
-└───pdf_service/
-    ├───.gitignore
-    ├───main.py
-    ├───quote_template.bak.html
-    ├───quote_template.html
-    ├───requirements.txt
-    ├───__pycache__/...
-    └───static/
-        └───logo.png
-```
-
-## Diagrama de Estados del Bot
+## Diagrama de Estados del Bot (Actualizado)
 
 ```mermaid
 stateDiagram-v2
     [*] --> CLIENT_NAME
-    CLIENT_NAME --> ASK_NUM_JOBS: Client name entered
-    ASK_NUM_JOBS --> COLLECT_JOB_DESCRIPTIONS: Number of jobs entered
-    COLLECT_JOB_DESCRIPTIONS --> COLLECT_JOB_DESCRIPTIONS: Job description entered (more jobs)
-    COLLECT_JOB_DESCRIPTIONS --> ASK_TOTAL_JOB_PRICE: Last job description entered
-    ASK_TOTAL_JOB_PRICE --> ASK_NUM_MATERIALS: Total job price entered
-    ASK_NUM_MATERIALS --> COLLECT_MATERIAL_DESCRIPTIONS: Number of materials entered
-    COLLECT_MATERIAL_DESCRIPTIONS --> COLLECT_MATERIAL_DESCRIPTIONS: Material description entered (more materials)
-    COLLECT_MATERIAL_DESCRIPTIONS --> ASK_TOTAL_MATERIAL_PRICE: Last material description entered
-    ASK_TOTAL_MATERIAL_PRICE --> [*]: Total material price entered (PDF generated)
-
-    CLIENT_NAME --> [*]: /cancel
-    ASK_NUM_JOBS --> [*]: /cancel
-    COLLECT_JOB_DESCRIPTIONS --> [*]: /cancel
-    ASK_TOTAL_JOB_PRICE --> [*]: /cancel
-    ASK_NUM_MATERIALS --> [*]: /cancel
-    COLLECT_MATERIAL_DESCRIPTIONS --> [*]: /cancel
-    ASK_TOTAL_MATERIAL_PRICE --> [*]: /cancel
+    CLIENT_NAME --> ASK_ADD_JOB_PRICES
+    ASK_ADD_JOB_PRICES --> ASK_NUM_JOBS
+    ASK_NUM_JOBS --> COLLECT_JOB_DESCRIPTIONS
+    COLLECT_JOB_DESCRIPTIONS --> COLLECT_JOB_PRICE : per_job_prices = true
+    COLLECT_JOB_DESCRIPTIONS --> COLLECT_JOB_DESCRIPTIONS : more jobs
+    COLLECT_JOB_DESCRIPTIONS --> ASK_TOTAL_JOB_PRICE : per_job_prices = false
+    COLLECT_JOB_PRICE --> COLLECT_JOB_DESCRIPTIONS : more jobs
+    COLLECT_JOB_PRICE --> ASK_ADD_MATERIAL_PRICES : all jobs done
+    ASK_TOTAL_JOB_PRICE --> ASK_ADD_MATERIAL_PRICES
+    ASK_ADD_MATERIAL_PRICES --> ASK_NUM_MATERIALS
+    ASK_NUM_MATERIALS --> COLLECT_MATERIAL_DESCRIPTIONS
+    ASK_NUM_MATERIALS --> ASK_FOR_VAT : num_materials = 0
+    COLLECT_MATERIAL_DESCRIPTIONS --> COLLECT_MATERIAL_PRICE : per_material_prices = true
+    COLLECT_MATERIAL_DESCRIPTIONS --> COLLECT_MATERIAL_DESCRIPTIONS : more materials
+    COLLECT_MATERIAL_DESCRIPTIONS --> ASK_TOTAL_MATERIAL_PRICE : per_material_prices = false
+    COLLECT_MATERIAL_PRICE --> COLLECT_MATERIAL_DESCRIPTIONS : more materials
+    COLLECT_MATERIAL_PRICE --> ASK_FOR_VAT : all materials done
+    ASK_TOTAL_MATERIAL_PRICE --> ASK_FOR_VAT
+    ASK_FOR_VAT --> ASK_WORKING_DAYS
+    ASK_WORKING_DAYS --> ASK_USE_DEFAULT_TERMS
+    ASK_USE_DEFAULT_TERMS --> REVIEW_SUMMARY : use_default = true
+    ASK_USE_DEFAULT_TERMS --> REVIEW_TERM_ACTION : use_default = false
+    REVIEW_TERM_ACTION --> MODIFY_TERM : action = 'modificar'
+    REVIEW_TERM_ACTION --> REVIEW_TERM_ACTION : more terms
+    MODIFY_TERM --> REVIEW_TERM_ACTION
+    REVIEW_TERM_ACTION --> ASK_ADD_EXTRA_TERM : all terms reviewed
+    ASK_ADD_EXTRA_TERM --> ADD_EXTRA_TERM : add_more = true
+    ASK_ADD_EXTRA_TERM --> REVIEW_SUMMARY : add_more = false
+    ADD_EXTRA_TERM --> ASK_ADD_EXTRA_TERM
+    REVIEW_SUMMARY --> SELECT_EDIT_ITEM : answer = 'no'
+    REVIEW_SUMMARY --> generate_pdf : answer = 'si'
+    SELECT_EDIT_ITEM --> CHOOSE_EDIT_FIELD
+    CHOOSE_EDIT_FIELD --> EDIT_ITEM_DESCRIPTION
+    CHOOSE_EDIT_FIELD --> EDIT_ITEM_PRICE
+    EDIT_ITEM_DESCRIPTION --> EDIT_ITEM_PRICE : edit_next = 'price'
+    EDIT_ITEM_DESCRIPTION --> REVIEW_SUMMARY
+    EDIT_ITEM_PRICE --> REVIEW_SUMMARY
+    generate_pdf --> ASK_SAVE_QUOTE
+    ASK_SAVE_QUOTE --> [*]
 ```
+
+## TODO
+
+### ✅ Completado
+
+*   **Core:** Flujo conversacional para crear cotizaciones.
+*   **Core:** Generación de PDF con `pdf-service`.
+*   **Feature:** Soporte para precios por ítem o precios totales.
+*   **Feature:** Cálculo de IVA.
+*   **Feature:** Personalización de términos y condiciones.
+*   **Feature:** Resumen y edición de la cotización antes de la creación del PDF.
+*   **Persistence:** Guardar, listar, ver, actualizar y eliminar cotizaciones en Firestore.
+*   **Infra:** Configuración mediante `config.ini` y variables de entorno.
+*   **Infra:** Almacenamiento de estado de sesión en Redis.
+*   **Feature:** Añadido un comando `/help` con la lista de comandos disponibles y su descripción.
+*   **Feature:** Definidos los estados de la cotización (`Inicial`, `Enviada`, `Aceptada`, `Rechazada`). El estado por defecto al guardar es `Inicial`.
+
+### ⏳ Pendientes
+
+### Backlog
+
+*   **Feature:** Agregar soporte para múltiples usuarios concurrentes con datos aislados.
+*   **Refactor:** Separar la lógica del `ConversationHandler` en módulos más pequeños.
+*   **Testing:** Añadir pruebas unitarias y de integración.
+*   **Feature:** Mejorar el manejo de errores y la validación de entradas en la conversación.

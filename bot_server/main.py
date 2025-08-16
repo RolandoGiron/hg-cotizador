@@ -727,7 +727,7 @@ async def ask_save_quote(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if _parse_yes_no(answer):
         quote_data = context.user_data.get('quote_data_to_save')
         if quote_data:
-            quote_data['status'] = 'Oferta Inicial'
+            quote_data['status'] = 'Inicial'
             quote_id = save_quote(quote_data)
             if quote_id:
                 await update.message.reply_text(f"Cotización guardada con éxito. ID: {quote_id}")
@@ -762,6 +762,29 @@ async def restart(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         "Conversación reiniciada. ¡Vamos a crear una cotización! Por favor, dime el nombre del cliente."
     )
     return CLIENT_NAME
+
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Muestra la lista de comandos disponibles."""
+    help_text = """
+*Comandos Disponibles:*
+
+*Conversación:*
+- `/start` o `/crear`: Inicia una nueva cotización.
+- `/restart`: Reinicia la conversación actual.
+- `/cancel`: Cancela la conversación actual.
+
+*Gestión de Cotizaciones:*
+- `/cotizaciones`: Muestra un listado de todas las cotizaciones guardadas.
+- `/ver_cotizacion <ID>`: Muestra el detalle de una cotización específica.
+- `/actualizar_estado <ID> <nuevo_estado>`: Cambia el estado de una cotización.
+  Estados sugeridos: `Inicial`, `Enviada`, `Aceptada`, `Rechazada`.
+- `/eliminar_cotizacion <ID>`: Elimina una cotización de la base de datos.
+
+*Ayuda:*
+- `/help`: Muestra este mensaje de ayuda.
+    """
+    await update.message.reply_text(help_text, parse_mode='Markdown')
 
 
 async def show_quotes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -944,7 +967,7 @@ async def update_quote_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text(f"Ocurrió un error: {e}")
 
 
-def main() -> None:
+def main() -> None: 
     application = Application.builder().token(TOKEN).build()
 
     conv_handler = ConversationHandler(
@@ -976,7 +999,7 @@ def main() -> None:
             ASK_SAVE_QUOTE: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_save_quote)],
             ConversationHandler.TIMEOUT: [MessageHandler(filters.ALL, on_timeout)],
         },
-        fallbacks=[CommandHandler("cancel", cancel), CommandHandler("restart", restart)],
+        fallbacks=[CommandHandler("cancel", cancel), CommandHandler("restart", restart), CommandHandler("help", help_command)],
         conversation_timeout=900,
     )
 
@@ -986,6 +1009,7 @@ def main() -> None:
     application.add_handler(CommandHandler("actualizar_estado", update_status))
     application.add_handler(CommandHandler("eliminar_cotizacion", delete_quote_handler))
     application.add_handler(CommandHandler("actualizar_cotizacion", update_quote_handler)) # New handler
+    application.add_handler(CommandHandler("help", help_command))
     application.run_polling()
 
 

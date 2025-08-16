@@ -1,31 +1,41 @@
-    sequenceDiagram
-         participant Usuario
-         participant API de Telegram
-         participant Servidor del Bot (Python)
-         participant Servicio PDF (MCP Server)
-     
-         Usuario->>API de Telegram: Envía comando /crearCotizacion
-         API de Telegram->>Servidor del Bot (Python): Notifica nuevo mensaje
-         Servidor del Bot (Python)->>API de Telegram: Envía 1ª pregunta (Ej: "¿Nombre del cliente?)
-        API de Telegram->>Usuario: Muestra 1ª pregunta
-    
-        Usuario->>API de Telegram: Responde a la 1ª pregunta
-        API de Telegram->>Servidor del Bot (Python): Notifica nueva respuesta
-        Servidor del Bot (Python)-->>Servidor del Bot (Python): Almacena la respuesta en memoria/BD
-        Servidor del Bot (Python)->>API de Telegram: Envía 2ª pregunta (Ej: "¿Producto?")
-        API de Telegram->>Usuario: Muestra 2ª pregunta
-    
-        Note right of Usuario: ...el proceso de P&R continúa...
-    
-        Usuario->>API de Telegram: Responde a la última pregunta
-        API de Telegram->>Servidor del Bot (Python): Notifica última respuesta
-        Servidor del Bot (Python)-->>Servidor del Bot (Python): Reúne todos los datos de la cotización
-        Servidor del Bot (Python)->>Servicio PDF (MCP Server): POST /generate-pdf con datos (JSON)
-        
-        Servicio PDF (MCP Server)-->>Servicio PDF (MCP Server): Rellena plantilla HTML con los datos
-        Servicio PDF (MCP Server)-->>Servicio PDF (MCP Server): Convierte HTML a PDF
-        Servicio PDF (MCP Server)->>Servidor del Bot (Python): Devuelve el archivo PDF generado
-    
-        Servidor del Bot (Python)->>API de Telegram: Envía el documento PDF al usuario
-        API de Telegram->>Usuario: Entrega el PDF de la cotización
+sequenceDiagram
+    participant Usuario
+    participant Bot de Telegram
+    participant Servidor del Bot
+    participant Servicio PDF
+    participant Firestore
 
+    Usuario->>Bot de Telegram: /start
+    Bot de Telegram->>Servidor del Bot: Notifica inicio de conversación
+    Servidor del Bot->>Bot de Telegram: Pide nombre del cliente
+    Bot de Telegram->>Usuario: Muestra pregunta
+
+    Note right of Usuario: El usuario responde a todas las preguntas...
+
+    Usuario->>Bot de Telegram: Envía última respuesta
+    Bot de Telegram->>Servidor del Bot: Notifica respuesta
+    Servidor del Bot->>Servidor del Bot: Construye el resumen de la cotización
+    Servidor del Bot->>Bot de Telegram: Envía resumen para revisión
+    Bot de Telegram->>Usuario: Muestra resumen
+
+    Usuario->>Bot de Telegram: Confirma que el resumen es correcto ("Si")
+    Bot de Telegram->>Servidor del Bot: Notifica confirmación
+    
+    Servidor del Bot->>Servicio PDF: POST /api/v1/generate-pdf con datos (JSON)
+    Servicio PDF->>Servicio PDF: Rellena plantilla HTML y convierte a PDF
+    Servicio PDF->>Servidor del Bot: Devuelve archivo PDF
+
+    Servidor del Bot->>Bot de Telegram: Envía documento PDF
+    Bot de Telegram->>Usuario: Entrega el PDF
+
+    Servidor del Bot->>Bot de Telegram: Pregunta si desea guardar la cotización
+    Bot de Telegram->>Usuario: Muestra pregunta
+
+    Usuario->>Bot de Telegram: Confirma que desea guardar ("Si")
+    Bot de Telegram->>Servidor del Bot: Notifica confirmación
+
+    Servidor del Bot->>Firestore: Llama a save_quote() con los datos
+    Firestore->>Firestore: Almacena la cotización
+    Firestore->>Servidor del Bot: Devuelve ID de la cotización
+    Servidor del Bot->>Bot de Telegram: Envía mensaje de éxito con ID
+    Bot de Telegram->>Usuario: Muestra mensaje de éxito

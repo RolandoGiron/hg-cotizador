@@ -1,201 +1,141 @@
-  ---
+# Conceptualización y Arquitectura: HG Cotizador Bot
 
-  Resumen de la Arquitectura
+---
 
+## Resumen de la Arquitectura
 
-  La solución se divide en tres componentes principales que trabajan juntos:
+La solución se divide en cuatro componentes principales que trabajan juntos:
 
+1.  **El Bot de Telegram (Interfaz):** La interfaz con la que el usuario interactúa. No requiere desarrollo, solo configuración.
+2.  **El Servidor del Bot (Lógica de Negocio):** Un servicio de backend que escucha los mensajes de Telegram, gestiona la conversación (usando Redis para el estado de la sesión) y se comunica con los otros servicios.
+3.  **El Servicio de Generación de PDF (Microservicio):** Un microservicio especializado cuya única responsabilidad es recibir datos, rellenar una plantilla y devolver un archivo PDF.
+4.  **La Base de Datos (Persistencia):** Una base de datos NoSQL (Google Firestore) que almacena todas las cotizaciones generadas para su consulta y gestión futura.
 
-   1. El Bot de Telegram (Interfaz): La interfaz con la que el usuario interactúa. No requiere desarrollo, solo configuración.
-   2. El Servidor del Bot (Lógica de Negocio): Un servicio de backend que escucha los mensajes de Telegram, gestiona la conversación (preguntas y respuestas) y se comunica con el
-      servicio de generación de PDFs.
-   3. El Servicio de Generación de PDF (MCP Server): Un microservicio especializado cuya única responsabilidad es recibir datos, rellenar una plantilla y devolver un archivo PDF.
+Separar estos componentes hace que el sistema sea más robusto, escalable y fácil de mantener.
 
-  Separar la lógica del bot de la generación del PDF hace que el sistema sea más robusto, escalable y fácil de mantener.
+---
 
-  Diagrama de Flujo de Alto Nivel
+## Diagrama de Componentes (Arquitectura Actual)
 
-  Este diagrama muestra cómo interactúan los componentes desde que el usuario inicia el comando hasta que recibe el PDF.
+Este diagrama muestra los componentes clave de la solución y cómo interactúan entre sí.
 
+```mermaid
+graph TD
+    subgraph "User Interface"
+        U[<font size=5>👤</font><br>Usuario en Telegram]
+    end
 
+    subgraph "Infraestructura Cloud"
+        subgraph "Bot Server (Python)"
+            direction LR
+            BH[Bot Handler<br><i>python-telegram-bot</i>]
+            CH[Conversation Logic<br><i>main.py</i>]
+            FC[Firebase Client<br><i>firebase_client.py</i>]
+            RC[Redis Client<br><i>redis-py</i>]
+        end
 
-    1 sequenceDiagram
-    2     participant Usuario
-    3     participant API de Telegram
-    4     participant Servidor del Bot (Python)
-    5     participant Servicio PDF (MCP Server)
-    6 
-    7     Usuario->>API de Telegram: Envía comando /crearCotizacion
-    8     API de Telegram->>Servidor del Bot (Python): Notifica nuevo mensaje
-    9     Servidor del Bot (Python)->>API de Telegram: Envía 1ª pregunta (Ej: "¿Nombre del cliente?")
-   10     API de Telegram->>Usuario: Muestra 1ª pregunta
-   11 
-   12     Usuario->>API de Telegram: Responde a la 1ª pregunta
-   13     API de Telegram->>Servidor del Bot (Python): Notifica nueva respuesta
-   14     Servidor del Bot (Python)-->>Servidor del Bot (Python): Almacena la respuesta en memoria/BD
-   15     Servidor del Bot (Python)->>API de Telegram: Envía 2ª pregunta (Ej: "¿Producto?")
-   16     API de Telegram->>Usuario: Muestra 2ª pregunta
-   17 
-   18     Note right of Usuario: ...el proceso de P&R continúa...
-   19 
-   20     Usuario->>API de Telegram: Responde a la última pregunta
-   21     API de Telegram->>Servidor del Bot (Python): Notifica última respuesta
-   22     Servidor del Bot (Python)-->>Servidor del Bot (Python): Reúne todos los datos de la cotización
-   23     Servidor del Bot (Python)->>Servicio PDF (MCP Server): POST /generate-pdf con datos (JSON)
-   24     
-   25     Servicio PDF (MCP Server)-->>Servicio PDF (MCP Server): Rellena plantilla HTML con los datos
-   26     Servicio PDF (MCP Server)-->>Servicio PDF (MCP Server): Convierte HTML a PDF
-   27     Servicio PDF (MCP Server)->>Servidor del Bot (Python): Devuelve el archivo PDF generado
-   28 
-   29     Servidor del Bot (Python)->>API de Telegram: Envía el documento PDF al usuario
-   30     API de Telegram->>Usuario: Entrega el PDF de la cotización
+        subgraph "PDF Service (FastAPI)"
+            direction LR
+            API[API Endpoint<br><i>/api/v1/generate-pdf</i>]
+            JIN[Template Engine<br><i>Jinja2</i>]
+            PDF[PDF Generator<br><i>WeasyPrint</i>]
+        end
 
+        subgraph "Databases"
+            FS[<font size=5>🔥</font><br><b>Firestore</b><br><i>Base de Datos de Cotizaciones</i>]
+            RD[(<font size=5>💾</font><br><b>Redis</b><br><i>Base de Datos de Sesiones</i>)]
+        end
+    end
 
-  ---
+    U -- HTTPS --> BH
+    BH -- Interacts with --> CH
+    CH -- Stores/Retrieves Session --> RC
+    CH -- Calls --> FC
+    CH -- HTTP Request --> API
+    FC -- CRUD Operations --> FS
+    RC -- Manages State --> RD
+    API -- Uses --> JIN
+    JIN -- Renders --> PDF
+```
 
-  Detalle de Componentes y Tecnologías
+---
 
-  1. Servidor del Bot (El Cerebro)
+## Diagrama de Flujo de Alto Nivel (Actualizado)
 
+Este diagrama de secuencia muestra el flujo de una conversación completa, desde el inicio hasta la generación del PDF y su almacenamiento en la base de datos.
 
-  Este es el núcleo de la aplicación. Gestionará toda la lógica de la conversación.
+```mermaid
+sequenceDiagram
+    participant Usuario
+    participant Bot de Telegram
+    participant Servidor del Bot
+    participant Servicio PDF
+    participant Firestore
 
+    Usuario->>Bot de Telegram: /start
+    Bot de Telegram->>Servidor del Bot: Notifica inicio de conversación
+    Servidor del Bot->>Bot de Telegram: Pide nombre del cliente
+    Bot de Telegram->>Usuario: Muestra pregunta
 
-   * Responsabilidades:
-       * Conectarse a la API de Telegram para recibir y enviar mensajes.
-       * Interpretar comandos como /crearCotizacion.
-       * Gestionar el estado de la conversación para cada usuario (saber qué pregunta se ha hecho y cuál es la siguiente).
-       * Validar las respuestas del usuario.
-       * Orquestar la llamada al servicio de PDF una vez que se han recopilado todos los datos.
-       * Manejar errores (ej. si el servicio de PDF falla).
+    Note right of Usuario: El usuario responde a todas las preguntas...
 
-   * Tecnología Recomendada: Python
-       * ¿Por qué? Es ideal para un desarrollo rápido, tiene un ecosistema maduro y librerías excelentes para bots.
+    Usuario->>Bot de Telegram: Envía última respuesta
+    Bot de Telegram->>Servidor del Bot: Notifica respuesta
+    Servidor del Bot->>Servidor del Bot: Construye el resumen de la cotización
+    Servidor del Bot->>Bot de Telegram: Envía resumen para revisión
+    Bot de Telegram->>Usuario: Muestra resumen
 
+    Usuario->>Bot de Telegram: Confirma que el resumen es correcto ("Si")
+    Bot de Telegram->>Servidor del Bot: Notifica confirmación
+    
+    Servidor del Bot->>Servicio PDF: POST /api/v1/generate-pdf con datos (JSON)
+    Servicio PDF->>Servicio PDF: Rellena plantilla HTML y convierte a PDF
+    Servicio PDF->>Servidor del Bot: Devuelve archivo PDF
 
-   * Librerías Clave:
-       * `python-telegram-bot`: La librería más popular y completa para crear bots de Telegram con Python. Proporciona una clase ConversationHandler que es perfecta para manejar
-         flujos de preguntas y respuestas como el que necesitas.
-       * `requests`: Para realizar la llamada HTTP (POST) al servicio de generación de PDF.
-       * `redis` (Opcional pero recomendado): Para almacenar el estado de la conversación. Si el bot se reinicia, no perderá el hilo de las conversaciones activas. Es mucho más
-         robusto que guardarlo en memoria.
+    Servidor del Bot->>Bot de Telegram: Envía documento PDF
+    Bot de Telegram->>Usuario: Entrega el PDF
 
+    Servidor del Bot->>Bot de Telegram: Pregunta si desea guardar la cotización
+    Bot de Telegram->>Usuario: Muestra pregunta
 
-  2. Servicio de Generación de PDF (MCP Server)
+    Usuario->>Bot de Telegram: Confirma que desea guardar ("Si")
+    Bot de Telegram->>Servidor del Bot: Notifica confirmación
 
-  Un microservicio simple y enfocado.
+    Servidor del Bot->>Firestore: Llama a save_quote() con los datos
+    Firestore->>Firestore: Almacena la cotización
+    Firestore->>Servidor del Bot: Devuelve ID de la cotización
+    Servidor del Bot->>Bot de Telegram: Envía mensaje de éxito con ID
+    Bot de Telegram->>Usuario: Muestra mensaje de éxito
+```
 
+---
 
-   * Responsabilidades:
-       * Exponer un endpoint de API (ej. POST /api/v1/generate-pdf).
-       * Recibir un cuerpo de solicitud en formato JSON con los datos de la cotización.
-       * Utilizar una plantilla (HTML es lo más flexible) para estructurar el documento.
-       * Inyectar los datos del JSON en la plantilla.
-       * Convertir el resultado en un archivo PDF.
-       * Devolver el PDF en la respuesta HTTP.
+## Flujo de Trabajo Detallado (Paso a Paso)
 
+1.  **Configuración Inicial:**
+    *   Registras tu bot en Telegram usando BotFather para obtener un `TOKEN_API`.
+    *   Configuras un proyecto en Google Cloud con Firestore y obtienes las credenciales de servicio.
+    *   Desarrollas el Servidor del Bot, el Servicio PDF y la plantilla HTML.
 
-   * Tecnología Recomendada: Python + FastAPI + WeasyPrint
-       * ¿Por qué?
-           * FastAPI: Es un framework web moderno, extremadamente rápido y ligero. Genera documentación de API (Swagger UI) automáticamente, lo cual es genial para probar el
-             microservicio de forma aislada.
-           * HTML para plantillas: Es mucho más fácil diseñar y dar estilo a una cotización con HTML y CSS que con librerías de PDF de bajo nivel.
-           * WeasyPrint: Es una excelente librería que convierte HTML y CSS en PDF, respetando los estilos, imágenes, etc.
+2.  **Inicio de la Conversación:**
+    *   El usuario envía el comando `/start`.
+    *   El `ConversationHandler` del Servidor del Bot se activa y pide el nombre del cliente.
 
+3.  **Recopilación de Datos:**
+    *   El bot guía al usuario a través de una serie de preguntas para recopilar los detalles de la cotización (trabajos, materiales, precios, etc.).
+    *   El estado de la conversación se mantiene en **Redis** para no perder el hilo si el bot se reinicia.
 
-   * Librerías Clave:
-       * `fastapi`: El framework para construir la API.
-       * `uvicorn`: El servidor ASGI necesario para ejecutar FastAPI.
-       * `Jinja2`: Motor de plantillas para renderizar el HTML con los datos del JSON.
-       * `WeasyPrint`: La librería que hace la magia de convertir el HTML renderizado a PDF.
+4.  **Revisión y Edición:**
+    *   Al final de las preguntas, el bot presenta un resumen completo.
+    *   El usuario puede solicitar la edición de trabajos o materiales si encuentra un error.
 
-  Diagrama de Componentes y Tecnologías
+5.  **Generación del PDF:**
+    *   Una vez que el usuario aprueba el resumen, el Servidor del Bot envía los datos al Servicio PDF.
+    *   El Servicio PDF renderiza la plantilla HTML con los datos y la convierte a un archivo PDF.
+    *   El PDF se devuelve al Servidor del Bot.
 
-
-
-    1 graph TD
-    2     subgraph "Internet"
-    3         U[<font size=5>👤</font><br>Usuario]
-    4         TAPI[<font size=5>💬</font><br>API de Telegram]
-    5     end
-    6 
-    7     subgraph "Tu Infraestructura (Servidor/Cloud)"
-    8         SB[<b>Servidor del Bot</b><br><i>Python</i>]
-    9         SPDF[<b>Servicio PDF (MCP)</b><br><i>FastAPI</i>]
-   10         DB[(<font size=5>💾</font><br><b>Redis</b><br><i>Base de Datos de Estado</i>)]
-   11     end
-   12 
-   13     U -- HTTPS --> TAPI
-   14     TAPI -- Webhook/Long Polling --> SB
-   15 
-   16     subgraph "Lógica del Servidor del Bot"
-   17         direction LR
-   18         PTB[python-telegram-bot<br><i>ConversationHandler</i>]
-   19         REQ[requests]
-   20     end
-   21     
-   22     subgraph "Lógica del Servicio PDF"
-   23         direction LR
-   24         JIN[Jinja2<br><i>Plantilla HTML</i>]
-   25         WEASY[WeasyPrint<br><i>Conversor a PDF</i>]
-   26     end
-   27 
-   28     SB -- Contiene --> PTB
-   29     SB -- Contiene --> REQ
-   30     
-   31     SPDF -- Contiene --> JIN
-   32     SPDF -- Contiene --> WEASY
-   33 
-   34     SB -- "Guarda/Lee estado<br>de conversación" --> DB
-   35     SB -- "1. POST /generate-pdf<br>(JSON con datos)" --> SPDF
-   36     SPDF -- "2. Devuelve archivo PDF" --> SB
-   37     SB -- "3. Envía documento" --> TAPI
-
-
-  ---
-
-  Flujo de Trabajo Detallado (Paso a Paso)
-
-
-   1. Configuración Inicial:
-       * Registras tu bot en Telegram usando BotFather para obtener un TOKEN_API.
-       * Desarrollas el Servidor del Bot en Python. El TOKEN_API se usa para autenticarse.
-       * Desarrollas el Servicio PDF con FastAPI y creas un archivo plantilla.html con marcadores como {{ nombre_cliente }}, {{ producto_descripcion }}, etc.
-
-
-   2. Inicio de la Conversación:
-       * El usuario envía el comando /crearCotizacion a tu bot.
-       * El ConversationHandler del Servidor del Bot se activa. Entra en el primer estado (ej. ESPERANDO_NOMBRE).
-       * El bot responde con la primera pregunta: "¿Cuál es el nombre del cliente?".
-
-
-   3. Recopilación de Datos:
-       * El usuario responde: "Cliente Ejemplo S.A.".
-       * El bot recibe la respuesta. El ConversationHandler la guarda (ej. en un diccionario asociado al user_id en Redis) y pasa al siguiente estado (ESPERANDO_PRODUCTO).
-       * El bot envía la siguiente pregunta: "¿Qué producto o servicio se va a cotizar?".
-       * Este ciclo se repite para todas las preguntas necesarias (cantidad, precio, etc.).
-
-
-   4. Generación del PDF:
-       * Una vez que se responde la última pregunta, el ConversationHandler finaliza el ciclo de preguntas.
-       * El bot recopila todas las respuestas guardadas para ese usuario en un único objeto JSON.
-       * { "nombre_cliente": "Cliente Ejemplo S.A.", "producto": "Desarrollo de API", "horas": 50, ... }
-       * El bot usa la librería requests para hacer una llamada POST al endpoint http://localhost:8000/api/v1/generate-pdf (o la URL donde se despliegue el servicio), enviando el
-         JSON en el cuerpo de la solicitud.
-
-
-   5. Proceso en el Servicio PDF:
-       * FastAPI recibe la solicitud POST.
-       * Usa Jinja2 para cargar plantilla.html y le pasa el JSON recibido. Jinja2 reemplaza {{ nombre_cliente }} por "Cliente Ejemplo S.A." y así sucesivamente.
-       * El resultado es una cadena de texto con el HTML completo y renderizado.
-       * WeasyPrint toma esta cadena de HTML y la convierte en un archivo PDF en memoria.
-       * FastAPI devuelve una StreamingResponse con el contenido del PDF y el media_type apropiado (application/pdf).
-
-
-   6. Entrega al Usuario:
-       * El Servidor del Bot recibe la respuesta del servicio PDF.
-       * Usa la función send_document de python-telegram-bot para enviar el archivo PDF directamente al usuario que lo solicitó.
-       * El bot envía un mensaje final como "¡Aquí está tu cotización!". La conversación termina.
-
-
-  Esta arquitectura es modular, escalable y utiliza herramientas modernas y eficientes para cada tarea
+6.  **Entrega y Almacenamiento:**
+    *   El Servidor del Bot envía el PDF al usuario a través de Telegram.
+    *   Se le pregunta al usuario si desea guardar la cotización.
+    *   Si la respuesta es afirmativa, el Servidor del Bot invoca al cliente de **Firestore** para guardar una copia de la cotización en la base de datos, asignándole un ID único.
+    *   El bot confirma que la cotización ha sido guardada.
