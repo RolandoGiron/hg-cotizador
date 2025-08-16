@@ -12,6 +12,7 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
+from firebase_client import save_quote, list_quotes, get_quote_by_id, update_quote_status, delete_quote, update_quote
 
 # Nuevos términos por defecto (con placeholder para working_days)
 DEFAULT_TERMS = [
@@ -25,7 +26,7 @@ DEFAULT_TERMS = [
 ]
 
 # Estados de la conversación
-(
+( 
     CLIENT_NAME,
     ASK_ADD_JOB_PRICES,
     ASK_NUM_JOBS,
@@ -49,40 +50,48 @@ DEFAULT_TERMS = [
     CHOOSE_EDIT_FIELD,
     EDIT_ITEM_DESCRIPTION,
     EDIT_ITEM_PRICE,
-) = range(23)
+    ASK_SAVE_QUOTE,
+) = range(24)
 
 # Configuración
 config = configparser.ConfigParser()
 config.read("../config.ini")
 TOKEN = os.getenv("TELEGRAM_TOKEN")
-PDF_SERVICE_URL = config["pdf_service"]["url"]
+# Permitir override por variable de entorno
+PDF_SERVICE_URL = os.getenv("PDF_SERVICE_URL", config.get("pdf_service", "url", fallback="http://127.0.0.1:8000/api/v1/generate-pdf"))
 
-# Redis
-r = redis.Redis(decode_responses=True)
+# Redis configurable
+REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
+REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
+REDIS_DB = int(os.getenv("REDIS_DB", "0"))
+REDIS_PASSWORD = os.getenv("REDIS_PASSWORD") or None
+SESSION_TTL_SECONDS = int(os.getenv("SESSION_TTL_SECONDS", "3600"))  # 1h por defecto
+r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB, password=REDIS_PASSWORD, decode_responses=True)
 
 
 def get_user_data(user_id):
-    """Obtiene los datos del usuario de Redis."""
-    data = r.hgetall(f"user:{user_id}")
-    # Deserializar listas almacenadas como JSON
-    for key in ("jobs", "materials", "terms"):
-        if key in data:
+    """Obtiene los datos del usuario de Redis y deserializa tipos."""
+    key = f"user:{user_id}"
+    data = r.hgetall(key)
+    if not data:
+        return {}
+    # Listas JSON
+    for list_key in ("jobs", "materials", "terms"):
+        if list_key in data and data[list_key]:
             try:
-                data[key] = json.loads(data[key])
-            except Exception:
-                data[key] = [] if key != "terms" else []
+                data[list_key] = json.loads(data[list_key])
+            except json.JSONDecodeError:
+                data[list_key] = []
         else:
-            if key != "terms":
-                data[key] = []
-            else:
-                data[key] = []
-    # Números
-    for key in ("total_jobs_price", "total_materials_price"):
-        if key in data:
+            data[list_key] = []
+    # Numéricos potenciales
+    for num_key in ("total_jobs_price", "total_materials_price", "subtotal", "vat_amount", "grand_total"):
+        if num_key in data:
             try:
-                data[key] = float(data[key])
+                data[num_key] = float(data[num_key])
             except ValueError:
-                data[key] = 0.0
+                data[num_key] = 0.0
+    # working_days
     if "working_days" in data:
         try:
             data["working_days"] = int(float(data["working_days"]))
@@ -92,11 +101,14 @@ def get_user_data(user_id):
 
 
 def set_user_data(user_id, key, value):
-    """Guarda datos del usuario en Redis."""
-    if isinstance(value, (dict, list)):
-        value = json.dumps(value)
-    r.hset(f"user:{user_id}", key, value)
-
+    """Serializa y guarda un campo del usuario en Redis, refrescando TTL."""
+    store_val = value
+    if isinstance(value, (list, dict)):
+        store_val = json.dumps(value, ensure_ascii=False)
+    elif isinstance(value, bool):
+        store_val = "true" if value else "false"
+    r.hset(f"user:{user_id}", key, store_val)
+    r.expire(f"user:{user_id}", SESSION_TTL_SECONDS)
 
 def _parse_yes_no(text: str) -> bool:
     t = text.strip().lower()
@@ -285,31 +297,27 @@ async def collect_material_price(update: Update, context: ContextTypes.DEFAULT_T
     user_id = update.message.from_user.id
     user_data = get_user_data(user_id)
     try:
-        price = float(update.message.text.replace("$", "").strip())
+        raw = update.message.text.replace("$", "").replace(" ", "").replace(",", "").strip()
+        price = float(raw)
     except ValueError:
         await update.message.reply_text("Eso no parece un precio válido. Por favor, introduce un número.")
         return COLLECT_MATERIAL_PRICE
-
     materials = user_data.get("materials", [])
     if not materials:
         await update.message.reply_text("Primero introduce la descripción del material.")
         return COLLECT_MATERIAL_DESCRIPTIONS
-
     materials[-1]["price"] = price
     set_user_data(user_id, "materials", materials)
-
     materials_done = int(user_data.get("materials_done", 0)) + 1
     set_user_data(user_id, "materials_done", materials_done)
-
     num_materials_total = int(user_data.get("num_materials", len(materials)))
     if materials_done < num_materials_total:
         await update.message.reply_text(f"Material {materials_done} guardado. Ahora introduce la descripción del material {materials_done + 1}.")
         return COLLECT_MATERIAL_DESCRIPTIONS
-    else:
-        total_materials_price = sum(m.get("price", 0) for m in materials)
-        set_user_data(user_id, "total_materials_price", total_materials_price)
-        await update.message.reply_text("Necesitas agregar el impuesto del IVA (Si/No)?")
-        return ASK_FOR_VAT
+    total_materials_price = sum(m.get("price", 0) for m in materials)
+    set_user_data(user_id, "total_materials_price", total_materials_price)
+    await update.message.reply_text("Necesitas agregar el impuesto del IVA (Si/No)?")
+    return ASK_FOR_VAT
 
 
 async def ask_total_material_price(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -364,7 +372,7 @@ async def ask_use_default_terms(update: Update, context: ContextTypes.DEFAULT_TY
     set_user_data(user_id, "term_index", 0)
     await update.message.reply_text(
         "Revisaremos cada término. Responde 'dejar', 'modificar' o 'eliminar'.\n" +
-        f"Término 1: '{DEFAULT_TERMS[0]}'. ¿Qué deseas hacer?"
+        f"Término 1: '{DEFAULT_TERMS[0]}'. ¿Qué deseas hacer? (dejar/modificar/eliminar)"
     )
     return REVIEW_TERM_ACTION
 
@@ -461,25 +469,23 @@ async def begin_review(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     """Construye y envía el resumen y pregunta confirmación."""
     user_id = update.message.from_user.id
     user_data = get_user_data(user_id)
-
     jobs_list = user_data.get("jobs", [])
     materials_list = user_data.get("materials", [])
     per_job_prices = user_data.get("per_job_prices") == "true"
     per_material_prices = user_data.get("per_material_prices") == "true"
-
     total_jobs = sum(j.get("price", 0) for j in jobs_list) if per_job_prices else float(user_data.get("total_jobs_price", 0))
     total_materials = sum(m.get("price", 0) for m in materials_list) if per_material_prices else float(user_data.get("total_materials_price", 0))
     subtotal = total_jobs + total_materials
-
     vat_included = user_data.get("vat") == "true"
     vat = round(subtotal * 0.13, 2) if vat_included else 0
     grand_total = round(subtotal + vat, 2)
-
-    lines = [
-        "Resumen de la cotización:",
-        "",
-        "Trabajos:",
-    ]
+    working_days = user_data.get("working_days")
+    terms = user_data.get("terms", [])
+    # Persistir cálculos
+    set_user_data(user_id, "subtotal", subtotal)
+    set_user_data(user_id, "vat_amount", vat)
+    set_user_data(user_id, "grand_total", grand_total)
+    lines = ["Resumen de la cotización:", "", "Trabajos:"]
     if jobs_list:
         for i, j in enumerate(jobs_list, start=1):
             price_txt = _format_money(j.get("price", 0)) if per_job_prices else "-"
@@ -487,7 +493,6 @@ async def begin_review(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         lines.append(f"  Total Mano de Obra: {_format_money(total_jobs)}")
     else:
         lines.append("  (sin trabajos)")
-
     lines.append("")
     lines.append("Materiales:")
     if materials_list:
@@ -497,7 +502,14 @@ async def begin_review(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         lines.append(f"  Total Materiales: {_format_money(total_materials)}")
     else:
         lines.append("  (sin materiales)")
-
+    if working_days:
+        lines.append("")
+        lines.append(f"Días hábiles estimados: {working_days}")
+    if terms:
+        lines.append("")
+        lines.append("Términos:")
+        for i, t in enumerate(terms, start=1):
+            lines.append(f"  {i}. {t}")
     lines.append("")
     lines.append(f"Subtotal: {_format_money(subtotal)}")
     if vat_included:
@@ -505,7 +517,6 @@ async def begin_review(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     lines.append(f"Total General: {_format_money(grand_total)}")
     lines.append("")
     lines.append("¿Está bien así? (Si/No)")
-
     await update.message.reply_text("\n".join(lines))
     return REVIEW_SUMMARY
 
@@ -697,12 +708,42 @@ async def generate_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
                 filename=f"cotizacion_{user_data.get('client_name','cliente')}.pdf",
                 caption="¡Aquí está tu cotización!",
             )
+            context.user_data['quote_data_to_save'] = pdf_data
+            await update.message.reply_text("¿Deseas guardar esta cotización en la base de datos? (Si/No)")
+            return ASK_SAVE_QUOTE
         else:
             await update.message.reply_text(f"Hubo un error al generar el PDF (código: {response.status_code}). Por favor, inténtalo de nuevo.")
+            r.delete(f"user:{user_id}")
+            return ConversationHandler.END
     except requests.exceptions.RequestException as e:
         await update.message.reply_text(f"No se pudo conectar al servicio de PDF: {e}")
+        r.delete(f"user:{user_id}")
+        return ConversationHandler.END
 
+async def ask_save_quote(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user_id = update.message.from_user.id
+    answer = update.message.text.strip().lower()
+
+    if _parse_yes_no(answer):
+        quote_data = context.user_data.get('quote_data_to_save')
+        if quote_data:
+            quote_data['status'] = 'Oferta Inicial'
+            quote_id = save_quote(quote_data)
+            if quote_id:
+                await update.message.reply_text(f"Cotización guardada con éxito. ID: {quote_id}")
+            else:
+                await update.message.reply_text("Hubo un error al guardar la cotización.")
+        else:
+            await update.message.reply_text("No se encontraron datos de la cotización para guardar.")
+    else:
+        await update.message.reply_text("La cotización no ha sido guardada.")
+
+    # Clean up and end conversation
     r.delete(f"user:{user_id}")
+    if 'quote_data_to_save' in context.user_data:
+        del context.user_data['quote_data_to_save']
+        
+    await update.message.reply_text("Proceso finalizado.")
     return ConversationHandler.END
 
 
@@ -721,6 +762,186 @@ async def restart(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         "Conversación reiniciada. ¡Vamos a crear una cotización! Por favor, dime el nombre del cliente."
     )
     return CLIENT_NAME
+
+
+async def show_quotes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Displays all saved quotes."""
+    quotes = list_quotes()
+    if quotes is None:
+        await update.message.reply_text("Hubo un error al obtener las cotizaciones.")
+        return
+
+    if not quotes:
+        await update.message.reply_text("No hay cotizaciones guardadas.")
+        return
+
+    message = "Cotizaciones guardadas:\n\n"
+    for quote in sorted(quotes, key=lambda x: x.get('date', ''), reverse=True):
+        quote_id = quote.get('id', 'N/A')
+        client_name = quote.get('client_name', 'N/A')
+        date = quote.get('date', 'N/A')
+        total = quote.get('grand_total', 0)
+        status = quote.get('status', 'N/A')
+        # Truncate ID for display
+        short_id = quote_id.split('-')[0]
+        message += f"*ID:* `{short_id}`\n"
+        message += f"*Cliente:* {client_name}\n"
+        message += f"*Fecha:* {date}\n"
+        message += f"*Total:* {_format_money(total)}\n"
+        message += f"*Estado:* {status}\n"
+        message += "--------------------\n"
+
+    await update.message.reply_text(message, parse_mode='Markdown')
+
+
+async def show_quote_details(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Displays the details of a single quote."""
+    try:
+        quote_id = context.args[0]
+    except (IndexError, ValueError):
+        await update.message.reply_text("Por favor, proporciona el ID de la cotización. Uso: /ver_cotizacion <ID>")
+        return
+
+    quote = get_quote_by_id(quote_id)
+
+    if quote is None:
+        await update.message.reply_text(f"No se encontró ninguna cotización con el ID que comience por '{quote_id}'.")
+        return
+    
+    if isinstance(quote, list):
+        await update.message.reply_text("Se encontraron varias cotizaciones con ese ID parcial. Por favor, sé más específico.")
+        return
+
+    client_name = quote.get('client_name', 'N/A')
+    date = quote.get('date', 'N/A')
+    status = quote.get('status', 'N/A')
+    total = quote.get('grand_total', 0)
+    jobs = quote.get('jobs', [])
+    materials = quote.get('materials', [])
+    terms = quote.get('terms', [])
+    
+    message = f"*Detalles de la Cotización ID: {quote.get('id').split('-')[0]}*\n\n"
+    message += f"*Cliente:* {client_name}\n"
+    message += f"*Fecha:* {date}\n"
+    message += f"*Estado:* {status}\n\n"
+    message += "*Trabajos:*\n"
+    if jobs:
+        for i, job in enumerate(jobs, 1):
+            price_str = f" - {_format_money(job.get('price', 0))}" if job.get('price') else ""
+            message += f"  {i}. {job.get('description', '')}{price_str}\n"
+    else:
+        message += "  (sin trabajos)\n"
+        
+    message += "\n*Materiales:*\n"
+    if materials:
+        for i, material in enumerate(materials, 1):
+            price_str = f" - {_format_money(material.get('price', 0))}" if material.get('price') else ""
+            message += f"  {i}. {material.get('description', '')}{price_str}\n"
+    else:
+        message += "  (sin materiales)\n"
+        
+    message += f"\n*Total:* {_format_money(total)}\n"
+    
+    message += "\n*Términos:*\n"
+    if terms:
+        for term in terms:
+            message += f"- {term}\n"
+    else:
+        message += "  (sin términos)\n"
+
+    await update.message.reply_text(message, parse_mode='Markdown')
+
+
+async def update_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Updates the status of a quote."""
+    try:
+        quote_id = context.args[0]
+        new_status = context.args[1]
+    except (IndexError, ValueError):
+        await update.message.reply_text("Uso: /actualizar_estado <ID> <nuevo_estado>")
+        return
+
+    result = update_quote_status(quote_id, new_status)
+
+    if result == "Ambiguous":
+        await update.message.reply_text("Se encontraron varias cotizaciones con ese ID parcial. Por favor, sé más específico.")
+    elif result == "Not Found":
+        await update.message.reply_text(f"No se encontró ninguna cotización con el ID que comience por '{quote_id}'.")
+    elif result:
+        await update.message.reply_text(f"El estado de la cotización {quote_id} ha sido actualizado a '{new_status}'.")
+    else:
+        await update.message.reply_text("Hubo un error al actualizar el estado de la cotización.")
+
+
+async def delete_quote_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Deletes a quote."""
+    try:
+        quote_id = context.args[0]
+    except (IndexError, ValueError):
+        await update.message.reply_text("Uso: /eliminar_cotizacion <ID>")
+        return
+
+    result = delete_quote(quote_id)
+
+    if result == "Ambiguous":
+        await update.message.reply_text("Se encontraron varias cotizaciones con ese ID parcial. Por favor, sé más específico.")
+    elif result == "Not Found":
+        await update.message.reply_text(f"No se encontró ninguna cotización con el ID que comience por '{quote_id}'.")
+    elif result:
+        await update.message.reply_text(f"La cotización {quote_id} ha sido eliminada.")
+    else:
+        await update.message.reply_text("Hubo un error al eliminar la cotización.")
+
+async def update_quote_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Updates an existing quote with new data."""
+    try:
+        quote_id_prefix = context.args[0]
+        # For simplicity, let's assume the user provides the full quote data in JSON format
+        # In a real scenario, you'd have a conversation flow to collect this data.
+        # For now, we'll use a placeholder or expect it in context.args[1]
+        # For demonstration, we'll fetch the existing quote and update its client name.
+        # This part needs to be adapted based on how you want to receive update data.
+        
+        # Fetch the existing quote
+        existing_quote = get_quote_by_id(quote_id_prefix)
+
+        if existing_quote is None:
+            await update.message.reply_text(f"No se encontró ninguna cotización con el ID que comience por '{quote_id_prefix}'.")
+            return
+        
+        if isinstance(existing_quote, list):
+            await update.message.reply_text("Se encontraron varias cotizaciones con ese ID parcial. Por favor, sé más específico.")
+            return
+
+        # Example: Update client name and status. In a real app, you'd parse more data.
+        # For now, let's assume the user wants to update the client name and status
+        # via command arguments for simplicity.
+        # e.g., /actualizar_cotizacion <ID> <new_client_name> <new_status>
+        if len(context.args) < 3:
+            await update.message.reply_text("Uso: /actualizar_cotizacion <ID> <nuevo_nombre_cliente> <nuevo_estado>")
+            return
+        
+        new_client_name = context.args[1]
+        new_status = context.args[2]
+
+        # Create a dictionary with the fields to update
+        updated_fields = {
+            "client_name": new_client_name,
+            "status": new_status
+        }
+
+        result = update_quote(existing_quote['id'], updated_fields)
+
+        if result:
+            await update.message.reply_text(f"La cotización {quote_id_prefix} ha sido actualizada con éxito.")
+        else:
+            await update.message.reply_text("Hubo un error al actualizar la cotización.")
+
+    except (IndexError, ValueError):
+        await update.message.reply_text("Uso: /actualizar_cotizacion <ID> <nuevo_nombre_cliente> <nuevo_estado>")
+        return
+    except Exception as e:
+        await update.message.reply_text(f"Ocurrió un error: {e}")
 
 
 def main() -> None:
@@ -752,6 +973,7 @@ def main() -> None:
             CHOOSE_EDIT_FIELD: [MessageHandler(filters.TEXT & ~filters.COMMAND, choose_edit_field)],
             EDIT_ITEM_DESCRIPTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_item_description)],
             EDIT_ITEM_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_item_price)],
+            ASK_SAVE_QUOTE: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_save_quote)],
             ConversationHandler.TIMEOUT: [MessageHandler(filters.ALL, on_timeout)],
         },
         fallbacks=[CommandHandler("cancel", cancel), CommandHandler("restart", restart)],
@@ -759,6 +981,11 @@ def main() -> None:
     )
 
     application.add_handler(conv_handler)
+    application.add_handler(CommandHandler("cotizaciones", show_quotes))
+    application.add_handler(CommandHandler("ver_cotizacion", show_quote_details))
+    application.add_handler(CommandHandler("actualizar_estado", update_status))
+    application.add_handler(CommandHandler("eliminar_cotizacion", delete_quote_handler))
+    application.add_handler(CommandHandler("actualizar_cotizacion", update_quote_handler)) # New handler
     application.run_polling()
 
 
