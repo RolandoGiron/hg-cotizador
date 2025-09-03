@@ -1,5 +1,6 @@
 import firebase_admin
 from firebase_admin import credentials, firestore
+from google.cloud.firestore_v1.base_query import FieldFilter
 import os
 import uuid
 
@@ -92,7 +93,7 @@ def get_quote_by_id(quote_id):
 
     try:
         # Query for documents where the ID starts with the given partial ID
-        quotes_ref = db_client.collection('quotes').where('id', '>=', quote_id).where('id', '<=', quote_id + u'\uf8ff').stream()
+        quotes_ref = db_client.collection('quotes').where(filter=FieldFilter('id', '>=', quote_id)).where(filter=FieldFilter('id', '<=', quote_id + u'\uf8ff')).stream()
         
         found_quotes = [quote.to_dict() for quote in quotes_ref]
         
@@ -120,7 +121,7 @@ def update_quote_status(quote_id, new_status):
 
     try:
         # First, find the document with the matching full or partial ID
-        quotes_ref = db_client.collection('quotes').where('id', '>=', quote_id).where('id', '<=', quote_id + u'\uf8ff').stream()
+        quotes_ref = db_client.collection('quotes').where(filter=FieldFilter('id', '>=', quote_id)).where(filter=FieldFilter('id', '<=', quote_id + u'\uf8ff')).stream()
         
         found_quotes = [q for q in quotes_ref]
 
@@ -152,7 +153,7 @@ def delete_quote(quote_id):
 
     try:
         # First, find the document with the matching full or partial ID
-        quotes_ref = db_client.collection('quotes').where('id', '>=', quote_id).where('id', '<=', quote_id + u'\uf8ff').stream()
+        quotes_ref = db_client.collection('quotes').where(filter=FieldFilter('id', '>=', quote_id)).where(filter=FieldFilter('id', '<=', quote_id + u'\uf8ff')).stream()
         
         found_quotes = [q for q in quotes_ref]
 

@@ -108,7 +108,10 @@ stateDiagram-v2
 *   **Feature:** Añadido un comando `/help` con la lista de comandos disponibles y su descripción.
 *   **Feature:** Definidos los estados de la cotización (`Inicial`, `Enviada`, `Aceptada`, `Rechazada`). El estado por defecto al guardar es `Inicial`.
 
-### ⏳ Pendientes
+### ⏳ En Proceso
+
+*   **Feature:** En el handler de /actualizar_cotizacion , se requiere que se cambie,  a /actualizar_cotizacion <ID_cotizacion>, que vaya recorriendo cada uno de los items de los trabajos y de los materiales, y pregunte si se quiere modificar la descripcion o el precio.
+ 
 
 ### Backlog
 

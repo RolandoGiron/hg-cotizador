@@ -26,7 +26,7 @@ DEFAULT_TERMS = [
 ]
 
 # Estados de la conversación
-( 
+(
     CLIENT_NAME,
     ASK_ADD_JOB_PRICES,
     ASK_NUM_JOBS,
@@ -51,7 +51,10 @@ DEFAULT_TERMS = [
     EDIT_ITEM_DESCRIPTION,
     EDIT_ITEM_PRICE,
     ASK_SAVE_QUOTE,
-) = range(24)
+    UPDATE_CHOOSE_ITEM,
+    UPDATE_CHOOSE_FIELD,
+    UPDATE_GET_NEW_VALUE,
+) = range(27)
 
 # Configuración
 config = configparser.ConfigParser()
@@ -76,7 +79,7 @@ def get_user_data(user_id):
     if not data:
         return {}
     # Listas JSON
-    for list_key in ("jobs", "materials", "terms"):
+    for list_key in ("jobs", "materials", "terms", "update_jobs", "update_materials"):
         if list_key in data and data[list_key]:
             try:
                 data[list_key] = json.loads(data[list_key])
@@ -489,7 +492,7 @@ async def begin_review(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     if jobs_list:
         for i, j in enumerate(jobs_list, start=1):
             price_txt = _format_money(j.get("price", 0)) if per_job_prices else "-"
-            lines.append(f"  {i}. {j.get('description','')} | Precio: {price_txt}")
+            lines.append(f"  {i}. {j.get('description','')}| Precio: {price_txt}")
         lines.append(f"  Total Mano de Obra: {_format_money(total_jobs)}")
     else:
         lines.append("  (sin trabajos)")
@@ -498,7 +501,7 @@ async def begin_review(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     if materials_list:
         for i, m in enumerate(materials_list, start=1):
             price_txt = _format_money(m.get("price", 0)) if per_material_prices else "-"
-            lines.append(f"  {i}. {m.get('description','')} | Precio: {price_txt}")
+            lines.append(f"  {i}. {m.get('description','')}| Precio: {price_txt}")
         lines.append(f"  Total Materiales: {_format_money(total_materials)}")
     else:
         lines.append("  (sin materiales)")
@@ -777,6 +780,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 *Gestión de Cotizaciones:*
 - `/cotizaciones`: Muestra un listado de todas las cotizaciones guardadas.
 - `/ver_cotizacion <ID>`: Muestra el detalle de una cotización específica.
+- `/actualizar_cotizacion <ID>`: Inicia la edición de una cotización existente.
 - `/actualizar_estado <ID> <nuevo_estado>`: Cambia el estado de una cotización.
   Estados sugeridos: `Inicial`, `Enviada`, `Aceptada`, `Rechazada`.
 - `/eliminar_cotizacion <ID>`: Elimina una cotización de la base de datos.
@@ -812,7 +816,7 @@ async def show_quotes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         message += f"*Fecha:* {date}\n"
         message += f"*Total:* {_format_money(total)}\n"
         message += f"*Estado:* {status}\n"
-        message += "--------------------\n"
+        message += "------------------------------------\n"
 
     await update.message.reply_text(message, parse_mode='Markdown')
 
@@ -915,57 +919,169 @@ async def delete_quote_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     else:
         await update.message.reply_text("Hubo un error al eliminar la cotización.")
 
-async def update_quote_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Updates an existing quote with new data."""
+async def update_quote_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Starts the conversation to update a quote."""
+    user_id = update.message.from_user.id
     try:
         quote_id_prefix = context.args[0]
-        # For simplicity, let's assume the user provides the full quote data in JSON format
-        # In a real scenario, you'd have a conversation flow to collect this data.
-        # For now, we'll use a placeholder or expect it in context.args[1]
-        # For demonstration, we'll fetch the existing quote and update its client name.
-        # This part needs to be adapted based on how you want to receive update data.
-        
-        # Fetch the existing quote
-        existing_quote = get_quote_by_id(quote_id_prefix)
-
-        if existing_quote is None:
-            await update.message.reply_text(f"No se encontró ninguna cotización con el ID que comience por '{quote_id_prefix}'.")
-            return
-        
-        if isinstance(existing_quote, list):
-            await update.message.reply_text("Se encontraron varias cotizaciones con ese ID parcial. Por favor, sé más específico.")
-            return
-
-        # Example: Update client name and status. In a real app, you'd parse more data.
-        # For now, let's assume the user wants to update the client name and status
-        # via command arguments for simplicity.
-        # e.g., /actualizar_cotizacion <ID> <new_client_name> <new_status>
-        if len(context.args) < 3:
-            await update.message.reply_text("Uso: /actualizar_cotizacion <ID> <nuevo_nombre_cliente> <nuevo_estado>")
-            return
-        
-        new_client_name = context.args[1]
-        new_status = context.args[2]
-
-        # Create a dictionary with the fields to update
-        updated_fields = {
-            "client_name": new_client_name,
-            "status": new_status
-        }
-
-        result = update_quote(existing_quote['id'], updated_fields)
-
-        if result:
-            await update.message.reply_text(f"La cotización {quote_id_prefix} ha sido actualizada con éxito.")
-        else:
-            await update.message.reply_text("Hubo un error al actualizar la cotización.")
-
     except (IndexError, ValueError):
-        await update.message.reply_text("Uso: /actualizar_cotizacion <ID> <nuevo_nombre_cliente> <nuevo_estado>")
-        return
-    except Exception as e:
-        await update.message.reply_text(f"Ocurrió un error: {e}")
+        await update.message.reply_text("Uso: /actualizar_cotizacion <ID>")
+        return ConversationHandler.END
 
+    existing_quote = get_quote_by_id(quote_id_prefix)
+
+    if existing_quote is None:
+        await update.message.reply_text(f"No se encontró ninguna cotización con el ID que comience por '{quote_id_prefix}'.")
+        return ConversationHandler.END
+    
+    if isinstance(existing_quote, list):
+        await update.message.reply_text("Se encontraron varias cotizaciones con ese ID parcial. Por favor, sé más específico.")
+        return ConversationHandler.END
+
+    # Store quote data in Redis for the conversation
+    for key, value in existing_quote.items():
+        set_user_data(user_id, f"update_{key}", value)
+
+    await update.message.reply_text("Cotización cargada. ¿Qué deseas hacer?")
+    return await display_update_options(update, context)
+
+
+async def display_update_options(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Displays the quote summary and editing options."""
+    user_id = update.message.from_user.id
+    user_data = get_user_data(user_id)
+    
+    jobs = user_data.get("update_jobs", [])
+    materials = user_data.get("update_materials", [])
+
+    message = "Resumen de la cotización a actualizar:\n\n"
+    message += "*Trabajos:*"
+    if jobs:
+        for i, job in enumerate(jobs, 1):
+            message += f"  {i}. {job.get('description', '')} - {_format_money(job.get('price', 0))}\n"
+    else:
+        message += "  (sin trabajos)\n"
+        
+    message += "\n*Materiales:*"
+    if materials:
+        for i, material in enumerate(materials, 1):
+            message += f"  {i}. {material.get('description', '')} - {_format_money(material.get('price', 0))}\n"
+    else:
+        message += "  (sin materiales)\n"
+
+    message += "\nElige qué modificar (ej: 'trabajo 1', 'material 2') o escribe 'guardar' para finalizar."
+    await update.message.reply_text(message, parse_mode='Markdown')
+    return UPDATE_CHOOSE_ITEM
+
+
+async def update_choose_item(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user_id = update.message.from_user.id
+    text = update.message.text.strip().lower()
+
+    if text == 'guardar':
+        return await save_updated_quote(update, context)
+
+    edit_type = None
+    index = None
+    if text.startswith("trabajo"):
+        edit_type = "job"
+        parts = text.split()
+        if len(parts) >= 2 and parts[1].isdigit():
+            index = int(parts[1]) - 1
+    elif text.startswith("material"):
+        edit_type = "material"
+        parts = text.split()
+        if len(parts) >= 2 and parts[1].isdigit():
+            index = int(parts[1]) - 1
+
+    if edit_type is None or index is None:
+        await update.message.reply_text("Entrada no válida. Usa 'trabajo N', 'material M' o 'guardar'.")
+        return UPDATE_CHOOSE_ITEM
+
+    items = get_user_data(user_id).get(f"update_{edit_type}s", [])
+    if index < 0 or index >= len(items):
+        await update.message.reply_text("Número fuera de rango. Intenta de nuevo.")
+        return UPDATE_CHOOSE_ITEM
+
+    set_user_data(user_id, "update_edit_type", edit_type)
+    set_user_data(user_id, "update_edit_index", index)
+
+    await update.message.reply_text("¿Qué deseas modificar? (descripcion/precio)")
+    return UPDATE_CHOOSE_FIELD
+
+
+async def update_choose_field(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user_id = update.message.from_user.id
+    choice = update.message.text.strip().lower()
+
+    if choice not in ("descripcion", "descripción", "precio"):
+        await update.message.reply_text("Opción no válida. Responde con 'descripcion' o 'precio'.")
+        return UPDATE_CHOOSE_FIELD
+
+    set_user_data(user_id, "update_edit_field", "description" if choice.startswith("desc") else "price")
+    await update.message.reply_text("Escribe el nuevo valor:")
+    return UPDATE_GET_NEW_VALUE
+
+
+async def update_get_new_value(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user_id = update.message.from_user.id
+    user_data = get_user_data(user_id)
+    new_value = update.message.text.strip()
+
+    edit_type = user_data.get("update_edit_type")
+    index = int(user_data.get("update_edit_index", 0))
+    field = user_data.get("update_edit_field")
+    
+    items = user_data.get(f"update_{edit_type}s", [])
+    
+    if field == 'price':
+        try:
+            items[index][field] = float(new_value.replace("$", "").strip())
+        except ValueError:
+            await update.message.reply_text("Eso no parece un precio válido. Por favor, introduce un número.")
+            return UPDATE_GET_NEW_VALUE
+    else:
+        items[index][field] = new_value
+
+    set_user_data(user_id, f"update_{edit_type}s", items)
+    
+    await update.message.reply_text("Ítem actualizado.")
+    return await display_update_options(update, context)
+
+
+async def save_updated_quote(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user_id = update.message.from_user.id
+    user_data = get_user_data(user_id)
+    
+    quote_id = user_data.get("update_id")
+    updated_fields = {
+        "jobs": user_data.get("update_jobs", []),
+        "materials": user_data.get("update_materials", [])
+    }
+
+    # Recalculate totals
+    total_jobs = sum(j.get("price", 0) for j in updated_fields["jobs"])
+    total_materials = sum(m.get("price", 0) for m in updated_fields["materials"])
+    subtotal = total_jobs + total_materials
+    vat_included = user_data.get("update_vat", "false") == "true"
+    vat = round(subtotal * 0.13, 2) if vat_included else 0
+    grand_total = round(subtotal + vat, 2)
+
+    updated_fields["total_jobs"] = total_jobs
+    updated_fields["total_materials"] = total_materials
+    updated_fields["subtotal"] = subtotal
+    updated_fields["vat_amount"] = vat
+    updated_fields["grand_total"] = grand_total
+
+    result = update_quote(quote_id, updated_fields)
+
+    if result:
+        await update.message.reply_text(f"La cotización {quote_id.split('-')[0]} ha sido actualizada con éxito.")
+    else:
+        await update.message.reply_text("Hubo un error al actualizar la cotización.")
+
+    r.delete(f"user:{user_id}")
+    return ConversationHandler.END
 
 def main() -> None: 
     application = Application.builder().token(TOKEN).build()
@@ -1003,12 +1119,23 @@ def main() -> None:
         conversation_timeout=900,
     )
 
+    update_conv_handler = ConversationHandler(
+        entry_points=[CommandHandler("actualizar_cotizacion", update_quote_handler)],
+        states={
+            UPDATE_CHOOSE_ITEM: [MessageHandler(filters.TEXT & ~filters.COMMAND, update_choose_item)],
+            UPDATE_CHOOSE_FIELD: [MessageHandler(filters.TEXT & ~filters.COMMAND, update_choose_field)],
+            UPDATE_GET_NEW_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, update_get_new_value)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+        conversation_timeout=900,
+    )
+
     application.add_handler(conv_handler)
+    application.add_handler(update_conv_handler)
     application.add_handler(CommandHandler("cotizaciones", show_quotes))
     application.add_handler(CommandHandler("ver_cotizacion", show_quote_details))
     application.add_handler(CommandHandler("actualizar_estado", update_status))
     application.add_handler(CommandHandler("eliminar_cotizacion", delete_quote_handler))
-    application.add_handler(CommandHandler("actualizar_cotizacion", update_quote_handler)) # New handler
     application.add_handler(CommandHandler("help", help_command))
     application.run_polling()
 
